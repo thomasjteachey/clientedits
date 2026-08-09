@@ -1,0 +1,19 @@
+# Build output and packaged artifacts.
+#
+# These are deliberately not tracked: they are compiled binaries derived from a
+# specific Wow.exe build, and the packaged zip is what gets served to players.
+out/
+dist/
+
+# MSVC leftovers
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.dll
+*.exe
+
+# Runtime logs written next to the client
+AnimSpeedFix*.log
+AnimTrace*.csv

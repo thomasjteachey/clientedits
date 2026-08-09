@@ -1,0 +1,5 @@
+; Export DirectInput8Create undecorated - Wow.exe imports it by that exact name,
+; but __stdcall would otherwise decorate it as _DirectInput8Create@20.
+LIBRARY dinput8
+EXPORTS
+    DirectInput8Create
