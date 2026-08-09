@@ -1265,10 +1265,37 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
         unsigned __int64 guid = pGetActiveGuid();
         if (guid) {
             void* me = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnitOrPlayer);
-            // only the local player's own movement
-            if (me && (void*)((BYTE*)me + kOff_Movement) == self) {
-                ++g_cClipMine;
+
+            // Which unit owns this CMovement? Ours, or a REMOTE player's.
+            //
+            // Remote players matter as much as we do. Their client stops them at
+            // a blocker, but ours keeps dead-reckoning them straight through it
+            // between heartbeats, and every heartbeat then snaps them back - the
+            // "other players teleport around over and over" artefact. A real wall
+            // never does this because our client extrapolates them against the
+            // same world geometry. Clipping their interpolation the same way we
+            // clip our own restores that: they stop at the body instead of
+            // oscillating through it. We only shorten the extrapolated step, so
+            // an authoritative position update still lands normally.
+            void* mover = (BYTE*)self - kOff_Movement;
+            if (mover != me) {
+                // Not us - prove it really is a live unit before touching it,
+                // by resolving its own GUID back through the object manager.
+                if (!Readable((BYTE*)mover + kOff_GuidLow, 8))
+                    mover = NULL;
+                else {
+                    DWORD lo = *(DWORD*)((BYTE*)mover + kOff_GuidLow);
+                    DWORD hi = *(DWORD*)((BYTE*)mover + kOff_GuidHigh);
+                    if (pObjectPtr(lo, hi, kTypeMaskUnitOrPlayer) != mover)
+                        mover = NULL;
+                }
+            }
+
+            if (mover) {
+                if (mover == me)
+                    ++g_cClipMine;
                 {
+                    void* me = mover;                // clip in the mover's own frame
                     float px = *(float*)((BYTE*)self + kOff_CMovementPos);
                     float py = *(float*)((BYTE*)self + kOff_CMovementPos + 4);
                     float odx = dx, ody = dy;
