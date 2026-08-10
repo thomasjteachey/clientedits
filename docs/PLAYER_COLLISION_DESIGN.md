@@ -164,3 +164,26 @@ confirm #1, then enable.
 `strings PAT` · `xrefs VA` · `dataref VA` · `callers VA` · `entry VA` ·
 `disasm VA [N]` · `around VA [N]` · `func VA [MAX]`. Validated against the known
 AnimSpeedFix gate site (`0x7388C1`).
+
+## Wanted, not built: scale collision by actual model size
+
+Radius (and optionally Height) are single global values today, so a Gnome and a
+Tauren are the same obstacle. Wanted: derive them per unit, so race bulk and
+anything that visually enlarges a player grow its collision to match. Height
+scaling should be separately switchable from radius scaling.
+
+Sources for the size: the object descriptor's scale field covers scale auras
+cheaply but not race (a Tauren's bulk is in its model, not its scale); race bulk
+needs the model bounding radius or a race->factor table.
+
+Two things to respect when implementing:
+
+- The block distance is a **Minkowski sum** and must become `rA + rB`. The code
+  currently assumes one shared radius and uses `2 * Radius` in several places
+  (ClipDelta, FindNearestBlocker, the shape primitives, StandCb), so this is the
+  change with the widest blast radius.
+- **The server has to agree.** PlayerCollisionServer.cpp hardcodes BLOCK_DISTANCE
+  and BLOCK_HEIGHT to mirror the DLL's defaults; if per-unit scaling only lands
+  client-side, bots and humans will disagree about where the walls are.
+
+Keep it opt-in (`ScaleByModel = 0`), like every other addition here.

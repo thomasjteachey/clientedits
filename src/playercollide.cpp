@@ -75,6 +75,26 @@ static const BYTE  kAuraCountSig[] = { 0x8B, 0x81, 0xD0, 0x0D, 0x00, 0x00, 0x83,
 static const DWORD kGetAuraInfo = 0x004F8870;   // thiscall (unit, index) -> spellId
 static const BYTE  kAuraInfoSig[] = { 0x55, 0x8B, 0xEC, 0x83, 0xB9, 0xD0, 0x0D, 0x00, 0x00, 0xFF };
 
+// ---- stand-on-players (experimental, install-gated by StandOnPlayers) -------
+//
+// CGUnit_C ground query: __thiscall(this), no stack args, returns the unit's
+// HEIGHT ABOVE GROUND as a float in st0 (it casts a downward ray, mask 0x100111,
+// and returns posZ - hitZ). Its caller in the physics tick compares the result
+// against 1.5 to decide whether the unit counts as grounded.
+//
+// The idea: when a blocking player's head is between our feet and the terrain,
+// report THAT as the ground. The client's own gravity, landing and standing
+// logic then does the rest - the same "feed the client different geometry rather
+// than reimplement its physics" approach that made the movement clip work.
+//
+// Honest caveat: this function returns a distance that feeds a grounded-state
+// decision. It may not be what actually snaps Z. If so, the log will show the
+// override taking effect with no visible standing, and the real snap point is
+// elsewhere (most likely inside the mover 0x7317A0). Measure, do not assume.
+static const DWORD kGroundSite   = 0x00714B60;
+static const BYTE  kGroundSig[]  = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28 };
+static const DWORD kGroundResume = 0x00714B66;
+
 // CGUnit_C::GetReaction - thiscall(this, otherUnit) -> reaction rank. Returns 4
 // for self. The client's own Script_UnitIsEnemy (0x60D330) calls this and treats
 // `reaction <= 1` as hostile, so we use the same test rather than inventing one.
@@ -966,6 +986,19 @@ static bool SegmentHitsCircle(float sx, float sy, float dx, float dy,
 // every call site (swept clip, contact state, depenetration) follows it.
 static int g_sides = 0;               // 0 = circle
 static int g_syncPredicted = 1;       // compensate [CMovement+0x4C] drift
+// Stand-on-players. OFF by default and INSTALL-gated: with it off the ground
+// hook is never applied, so the DLL behaves exactly as it did before the feature
+// existed. Nothing about normal collision changes either way.
+static int   g_standOnPlayers = 0;
+// Stage counters for the stand-on-players experiment. Which one stops climbing
+// tells us whether the ground query is even on the local player's path.
+static unsigned g_cGround = 0;      // hook fired at all
+static unsigned g_cGroundMine = 0;  // ...for the local player
+static unsigned g_cGroundCand = 0;  // ...and a body surface was found
+// Height of a body's walkable top surface above its feet. MUST stay under a
+// player's jump apex (~1.6 yд) or the surface is literally unreachable and
+// nothing ever lands on it - 2.0 failed for exactly that reason, by ~0.05.
+static float g_standHeight = 1.2f;
 #define SHAPE_STEP (g_sides == 4 ? 2 : 1)
 
 static const float kOctN[8][2] = {
@@ -1081,6 +1114,11 @@ static int __cdecl ClipCollectCb(DWORD guidLo, DWORD guidHi, void* arg)
     float oz = *(float*)((BYTE*)o + kOff_PosZ);
     if (fabsf(oz - c->sz) >= g_height)                // different floor / overhead
         return 1;
+    // Standing ON them, not walking INTO them: a cylinder's side must not block
+    // you while you are above its top face, or the wall clip shoves you off the
+    // edge and you can never walk around up there.
+    if (g_standOnPlayers && c->sz >= oz + g_standHeight - 0.15f)
+        return 1;
     float dx = ox - c->cx, dy = oy - c->cy;
     float reach = c->radius + sqrtf(c->rx*c->rx + c->ry*c->ry) + 1.0f;
     if (dx*dx + dy*dy > reach*reach)
@@ -1112,6 +1150,8 @@ static int __cdecl NearestCb(DWORD guidLo, DWORD guidHi, void* arg)
     float oz = *(float*)((BYTE*)o + kOff_PosZ);
     if (fabsf(oz - c->pz) >= g_height)                // different floor / overhead
         return 1;
+    if (g_standOnPlayers && c->pz >= oz + g_standHeight - 0.15f)
+        return 1;                                    // we are on top of them
     float dx = ox - c->px, dy = oy - c->py;
     float d2 = dx*dx + dy*dy;
     if (d2 >= c->radius * c->radius || d2 >= c->best2)
@@ -1288,12 +1328,60 @@ static void ClipDelta(void* unitSelf, float px, float py, float pz,
     *dy = outy;
 }
 
+// ============ stand-on-players: find a body's top surface beneath us =========
+//
+// Deliberately ignores g_height (the collision floor/ceiling gate): that exists
+// so you do not collide with someone upstairs, but standing ON someone means
+// being well ABOVE them, which that gate would reject.
+struct StandCtx {
+    void* self;
+    float px, py, pz;      // our position
+    float groundZ;         // the terrain height the client found
+    float radius;          // xy reach of the body's top surface
+    float bestTop;         // highest valid surface found
+    int   hit;
+};
+
+static int __cdecl StandCb(DWORD guidLo, DWORD guidHi, void* arg)
+{
+    StandCtx* c = (StandCtx*)arg;
+    void* o = pObjectPtr(guidLo, guidHi, kTypeMaskUnitOrPlayer);
+    if (!o || o == c->self)
+        return 1;
+
+    float ox = *(float*)((BYTE*)o + kOff_PosX);
+    float oy = *(float*)((BYTE*)o + kOff_PosY);
+    float oz = *(float*)((BYTE*)o + kOff_PosZ);
+
+    float dx = ox - c->px, dy = oy - c->py;
+    if (dx*dx + dy*dy > c->radius * c->radius)       // not over their body
+        return 1;
+
+    // You can only stand on someone you would collide with, so the whole
+    // feature stays governed by the same auras.
+    if (!BlocksMe(c->self, o))
+        return 1;
+
+    float top = oz + g_standHeight;
+    if (top > c->pz + 0.35f)                         // their head is above us
+        return 1;
+    if (top <= c->groundZ)                           // terrain is higher anyway
+        return 1;
+    if (top > c->bestTop) {
+        c->bestTop = top;
+        c->hit = 1;
+    }
+    return 1;
+}
+
 static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                                   float dx, float dy, float dz)
 {
     ++g_cClip;
     bool clipped = false;
     bool localMover = false;
+    bool  supported = false;      // resting on a body's top this frame
+    float supportZ = 0.0f;
     float shortx = 0.0f, shorty = 0.0f;   // movement we refused, for the base fixup
     if (g_enabled && g_native && AnyCollisionSpell() && self) {
         unsigned __int64 guid = pGetActiveGuid();
@@ -1335,6 +1423,44 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     float odx = dx, ody = dy;
                     float pz = *(float*)((BYTE*)self + kOff_CMovementPos + 8);
                     bool const isLocal = (mover == meLocal);
+
+                    // Vertical support: land on, and stay on, a body's top.
+                    //
+                    // 0x714B60 (the ground query) is never called for the local
+                    // player - measured, twice, with zero probe hits - so the
+                    // floor cannot be injected there. But this hook already
+                    // receives dz and we were passing it straight through. If
+                    // the step would cross a blocking body's top surface, stop
+                    // the fall on it; if we are already resting on one, hold the
+                    // descent at zero so gravity cannot pull us off.
+                    if (g_standOnPlayers && isLocal && dz < 0.0f) {
+                        StandCtx sc;
+                        sc.self = me; sc.px = px; sc.py = py; sc.pz = pz;
+                        sc.groundZ = pz + dz - 100.0f;   // no terrain filter here:
+                                                         // the client's own ground
+                                                         // handling still applies
+                                                         // its result separately
+                        sc.radius = 2.0f * g_radius;
+                        sc.bestTop = -1e9f; sc.hit = 0;
+                        pEnumVisible(StandCb, &sc);
+                        if (sc.hit && sc.bestTop >= pz + dz && sc.bestTop <= pz + 0.05f) {
+                            float allowed = sc.bestTop - pz;   // <= 0
+                            if (allowed > 0.0f) allowed = 0.0f;
+                            if (g_debug) {
+                                static DWORD s_l = 0;
+                                DWORD n = GetTickCount();
+                                if (n - s_l >= 250) {
+                                    s_l = n;
+                                    Log("stand: pz=%.2f top=%.2f dz %.3f -> %.3f",
+                                        pz, sc.bestTop, dz, allowed);
+                                }
+                            }
+                            dz = allowed;
+                            supported = true;
+                            supportZ = sc.bestTop;
+                        }
+                    }
+
                     ClipDelta(me, px, py, pz, isLocal, &dx, &dy);
                     localMover = isLocal;
                     clipped = (dx != odx) || (dy != ody);
@@ -1363,6 +1489,28 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
         }
     }
     int r = g_origClip(self, a1, a2, dx, dy, dz);
+
+    // Clamping dz is necessary but not sufficient: the ground resolution INSIDE
+    // that call snaps Z to the terrain, which knows nothing about a body being
+    // in the way, so it drags us straight back down. Re-assert the support
+    // height afterwards. Bounded to a small correction so this can never fight a
+    // real teleport, a knockback or falling off the edge of the surface.
+    if (supported) {
+        float* pz = (float*)((BYTE*)self + kOff_CMovementPos + 8);
+        float drop = supportZ - *pz;
+        if (drop > 0.0f && drop < 2.0f) {
+            *pz = supportZ;
+            if (g_debug) {
+                static DWORD s_l = 0;
+                DWORD n = GetTickCount();
+                if (n - s_l >= 250) {
+                    s_l = n;
+                    Log("stand: re-asserted z +%.3f -> %.2f (terrain snap pulled us off)",
+                        drop, supportZ);
+                }
+            }
+        }
+    }
 
     // The movement target is [CMovement+0x4C] + delta, so holding the player back
     // without touching +0x4C lets the shortfall accumulate and discharge as a
@@ -1449,6 +1597,70 @@ static int __fastcall CollideWrapper(void* self, void* /*edx*/, void* a1, void* 
         }
     }
     return r;
+}
+
+typedef float (__thiscall *GroundFn)(void* unit);
+static BYTE*    g_trampGround = NULL;
+static GroundFn g_origGround  = NULL;
+
+static float __fastcall GroundWrapper(void* self, void* /*edx*/)
+{
+    float d = g_origGround(self);
+    ++g_cGround;
+
+    // Report the stage counts even when we bail, so "never fired" can be told
+    // apart from "fired but never for us" and "for us but found nothing".
+    if (g_debug) {
+        static DWORD s_rep = 0;
+        DWORD now = GetTickCount();
+        if (now - s_rep >= 1000) {
+            s_rep = now;
+            Log("ground probe: calls=%u mine=%u candidates=%u",
+                g_cGround, g_cGroundMine, g_cGroundCand);
+        }
+    }
+
+    if (!g_standOnPlayers || !self || !AnyCollisionSpell())
+        return d;
+
+    // Local player only for now: a remote unit's Z comes from the server, so
+    // inventing a floor under it would just fight the next update.
+    unsigned __int64 guid = pGetActiveGuid();
+    if (!guid)
+        return d;
+    void* me = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnitOrPlayer);
+    if (me != self)
+        return d;
+    ++g_cGroundMine;
+
+    float px = *(float*)((BYTE*)self + kOff_PosX);
+    float py = *(float*)((BYTE*)self + kOff_PosY);
+    float pz = *(float*)((BYTE*)self + kOff_PosZ);
+
+    StandCtx c;
+    c.self = self; c.px = px; c.py = py; c.pz = pz;
+    c.groundZ = pz - d;                              // absolute terrain height
+    c.radius = 2.0f * g_radius;
+    c.bestTop = -1e9f; c.hit = 0;
+    pEnumVisible(StandCb, &c);
+    if (!c.hit)
+        return d;
+    ++g_cGroundCand;
+
+    float newDist = pz - c.bestTop;
+    if (newDist < 0.0f)
+        newDist = 0.0f;
+
+    if (g_debug) {
+        static DWORD s_last = 0;
+        DWORD now = GetTickCount();
+        if (now - s_last >= 250) {
+            s_last = now;
+            Log("stand: pz=%.2f terrain=%.2f bodyTop=%.2f dist %.2f -> %.2f",
+                pz, c.groundZ, c.bestTop, d, newDist);
+        }
+    }
+    return newDist;
 }
 
 // ------------------------------------------------------------- the detours
@@ -1570,6 +1782,11 @@ void PlayerCollide_LoadSettings(const char* dir)
     g_spellCollideEnemies = GetPrivateProfileIntA("PlayerCollide", "SpellCollideEnemies", 90212, ini);
     g_spellCollideAll     = GetPrivateProfileIntA("PlayerCollide", "SpellCollideAll", 90213, ini);
     g_syncPredicted = GetPrivateProfileIntA("PlayerCollide", "SyncPredicted", 1, ini);
+    g_standOnPlayers = GetPrivateProfileIntA("PlayerCollide", "StandOnPlayers", 0, ini);
+    GetPrivateProfileStringA("PlayerCollide", "StandHeight", "1.2", buf, sizeof(buf), ini);
+    g_standHeight = (float)atof(buf);
+    if (g_standHeight < 0.5f) g_standHeight = 0.5f;
+    if (g_standHeight > 6.0f) g_standHeight = 6.0f;
     g_sides = GetPrivateProfileIntA("PlayerCollide", "Sides", 0, ini);
     if (g_sides != 0 && g_sides != 4)                // 0 = circle, 4 = square,
         g_sides = 8;                                 // anything else = octagon
@@ -1688,6 +1905,20 @@ void PlayerCollide_Install()
                            "local-player update")) {
             g_enabled = 0;
             return;
+        }
+    }
+
+    // Install-gated: with StandOnPlayers off the ground hook is never applied,
+    // so this cannot affect anything for players who do not opt in.
+    if (g_standOnPlayers) {
+        if (VerifySig(kGroundSite, kGroundSig, sizeof(kGroundSig), "ground query") &&
+            InstallDetour(kGroundSite, kGroundSig, sizeof(kGroundSig), kGroundResume,
+                          GroundWrapper, &g_trampGround, (void**)&g_origGround,
+                          "ground query")) {
+            Log("stand-on-players ARMED (experimental), standHeight=%.2f", g_standHeight);
+        } else {
+            g_standOnPlayers = 0;
+            Log("stand-on-players: could not hook the ground query - disabled");
         }
     }
 
