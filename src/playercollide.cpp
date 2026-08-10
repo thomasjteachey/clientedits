@@ -1138,7 +1138,8 @@ static int FindNearestBlocker(void* self, float px, float py, float pz, float ra
 // and we collide with OURSELVES at distance 0 - which trips the concentric guard
 // and silently leaves the delta unclipped. That bug made this look like the hook
 // was doing nothing at all.
-static void ClipDelta(void* unitSelf, float px, float py, float pz, float* dx, float* dy)
+static void ClipDelta(void* unitSelf, float px, float py, float pz,
+                      bool isLocal, float* dx, float* dy)
 {
     void* self = unitSelf;
     float curx = px, cury = py;
@@ -1230,6 +1231,11 @@ static void ClipDelta(void* unitSelf, float px, float py, float pz, float* dx, f
         outx *= s; outy *= s;
     }
 
+    // Depenetration is for OUR OWN movement only. A remote unit's true position
+    // comes from the server; nudging it outward fights the next authoritative
+    // update and reads as jitter. For remote units we only stop the predicted
+    // step from entering a body - we never argue with where it actually is.
+    if (isLocal)
     // Depenetration. Resting exactly on (or just inside) the surface makes every
     // later frame take the "already inside" path, which only re-projects - so you
     // orbit the body at full tangential speed instead of being held off it. A
@@ -1242,11 +1248,36 @@ static void ClipDelta(void* unitSelf, float px, float py, float pz, float* dx, f
                                &nearest2, &hx, &hy)) {
             float nx, ny;
             float sd = OctagonDist(px, py, hx, hy, 2.0f * g_radius, &nx, &ny);
-            if (sd < 0.0f) {                         // inside the octagon
+            // Deadband. Parking exactly on the surface reads as "very slightly
+            // inside" every frame thanks to float noise, and pushing out on that
+            // fights the player's own forward input - measured as a 0.04 yd/frame
+            // shove backwards, which is the contact vibration. Only genuine
+            // penetration (buff popped while stacked, a blink-in) is corrected.
+            const float kPenetrationDeadband = 0.12f;
+            if (sd < -kPenetrationDeadband) {        // meaningfully inside
                 const float kMaxPush = 0.04f;        // per frame; gentle, never a snap
                 float push = (-sd) > kMaxPush ? kMaxPush : (-sd);
                 outx += nx * push;
                 outy += ny * push;
+            }
+        }
+    }
+
+    // Never hand back movement that opposes what was asked for. Our job is to
+    // STOP you, not to walk you backwards: a reversed delta fights the held key
+    // and oscillates. If the result points against the request, drop it to zero
+    // along that axis of disagreement instead.
+    {
+        float inLen2 = (*dx) * (*dx) + (*dy) * (*dy);
+        if (inLen2 > 1e-12f) {
+            float dot = outx * (*dx) + outy * (*dy);
+            if (dot < 0.0f) {
+                // Remove the component that runs counter to the request, keeping
+                // any sideways (sliding) part.
+                float ux = (*dx) / sqrtf(inLen2), uy = (*dy) / sqrtf(inLen2);
+                float along = outx * ux + outy * uy;      // negative here
+                outx -= ux * along;
+                outy -= uy * along;
             }
         }
     }
@@ -1260,11 +1291,12 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
 {
     ++g_cClip;
     bool clipped = false;
+    bool localMover = false;
     float shortx = 0.0f, shorty = 0.0f;   // movement we refused, for the base fixup
     if (g_enabled && g_native && AnyCollisionSpell() && self) {
         unsigned __int64 guid = pGetActiveGuid();
         if (guid) {
-            void* me = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnitOrPlayer);
+            void* meLocal = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnitOrPlayer);
 
             // Which unit owns this CMovement? Ours, or a REMOTE player's.
             //
@@ -1278,7 +1310,7 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
             // oscillating through it. We only shorten the extrapolated step, so
             // an authoritative position update still lands normally.
             void* mover = (BYTE*)self - kOff_Movement;
-            if (mover != me) {
+            if (mover != meLocal) {
                 // Not us - prove it really is a live unit before touching it,
                 // by resolving its own GUID back through the object manager.
                 if (!Readable((BYTE*)mover + kOff_GuidLow, 8))
@@ -1292,7 +1324,7 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
             }
 
             if (mover) {
-                if (mover == me)
+                if (mover == meLocal)
                     ++g_cClipMine;
                 {
                     void* me = mover;                // clip in the mover's own frame
@@ -1300,7 +1332,9 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     float py = *(float*)((BYTE*)self + kOff_CMovementPos + 4);
                     float odx = dx, ody = dy;
                     float pz = *(float*)((BYTE*)self + kOff_CMovementPos + 8);
-                    ClipDelta(me, px, py, pz, &dx, &dy); // `me` = unit, not CMovement
+                    bool const isLocal = (mover == meLocal);
+                    ClipDelta(me, px, py, pz, isLocal, &dx, &dy);
+                    localMover = isLocal;
                     clipped = (dx != odx) || (dy != ody);
                     shortx = odx - dx;               // what we removed
                     shorty = ody - dy;
@@ -1341,7 +1375,10 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
     // This instead subtracts exactly what we refused to move, which needs no
     // knowledge of when the position is committed. OFF by default: it changes
     // client state, so it stays opt-in until measured.
-    if (clipped && g_syncPredicted) {
+    // Local player only: [CMovement+0x4C] is the base our own input advances
+    // from. For a remote unit that base is driven by network updates, so editing
+    // it corrupts their interpolation instead of correcting it.
+    if (clipped && localMover && g_syncPredicted) {
         float* pred = (float*)((BYTE*)self + kOff_Predicted);
         pred[0] -= (shortx);
         pred[1] -= (shorty);
