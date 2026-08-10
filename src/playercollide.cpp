@@ -120,7 +120,7 @@ static GetReaction_t   pGetReaction;
 // ------------------------------------------------------------- settings/state
 static int    g_enabled = 1;          // shipped ON: inert until someone carries an aura
 static int    g_spellId = 0;          // legacy single-spell mode; off
-static float  g_radius = 1.0f;        // per-player collision radius (yards)
+static float  g_radius = 0.75f;       // per-player collision radius (yards)
 static int    g_bothNeed = 1;         // 1 = both must have the buff; 0 = the other only
 static float  g_pushMargin = 6.0f;    // legacy/inert (kept for the selftest export)
 static float  g_separateSpeed = 3.0f; // yards/sec, ONLY for overlap we did not cause
@@ -130,7 +130,9 @@ static float  g_contactBand = 0.0f;   // yards past the radius still counted as 
 // would collide with someone on the floor above you or flying overhead. Collision
 // applies only while |dz| < this. A player is ~2 yд tall and jumps ~1.6 yд, so the
 // 2.0 default means you cannot jump over someone; set it below ~1.5 to allow that.
-static float  g_height = 2.0f;
+// 1.4 is deliberately BELOW a player's ~1.6 yd jump apex, so you can jump over
+// someone. Raise above ~1.6 to make bodies unjumpable.
+static float  g_height = 1.4f;
 static int    g_native = 1;           // 1 = inject into the client's own sweep (real
                                       // wall + native sliding); 0 = legacy position
                                       // rewriting, kept only for comparison
@@ -1553,7 +1555,7 @@ void PlayerCollide_LoadSettings(const char* dir)
     g_debug     = GetPrivateProfileIntA("PlayerCollide", "Debug", 0, ini);
     g_showErrors= GetPrivateProfileIntA("PlayerCollide", "ShowErrors", 0, ini);
     char buf[64];
-    GetPrivateProfileStringA("PlayerCollide", "Radius", "1.0", buf, sizeof(buf), ini);
+    GetPrivateProfileStringA("PlayerCollide", "Radius", "0.75", buf, sizeof(buf), ini);
     g_radius = (float)atof(buf);
     if (g_radius < 0.05f) g_radius = 0.05f;
     if (g_radius > 5.0f)  g_radius = 5.0f;
@@ -1572,7 +1574,7 @@ void PlayerCollide_LoadSettings(const char* dir)
     if (g_sides != 0 && g_sides != 4)                // 0 = circle, 4 = square,
         g_sides = 8;                                 // anything else = octagon
 
-    GetPrivateProfileStringA("PlayerCollide", "Height", "2.0", buf, sizeof(buf), ini);
+    GetPrivateProfileStringA("PlayerCollide", "Height", "1.4", buf, sizeof(buf), ini);
     g_height = (float)atof(buf);
     if (g_height < 0.1f)  g_height = 0.1f;
     if (g_height > 20.0f) g_height = 20.0f;
