@@ -916,9 +916,12 @@ static bool IsHostileTo(void* me, void* other)
     return pGetReaction(me, other) <= 1;             // same test the client uses
 }
 
-// World-object HighGuids (creatures 0xF130, pets 0xF140, vehicles, transports,
-// GOs...) all start with an F nibble; player guids are plain counters with a
-// zero high dword. Cheap, and needs no object-manager round trip.
+// Creature-family HighGuids (creatures 0xF130, pets 0xF140, vehicles 0xF150,
+// GOs 0xF110...) all start with an F nibble; player guids are plain counters
+// with a zero high dword. Everything reaching this helper came through the
+// unit-or-player object mask, so those are the only two families possible
+// (MO transports, 0x1FC0, would classify as non-player anyway). Cheap, and
+// needs no object-manager round trip.
 static bool IsPlayerObject(void* unit)
 {
     DWORD hi = *(DWORD*)((BYTE*)unit + kOff_GuidHigh);
@@ -934,14 +937,13 @@ static bool BlocksMe(void* me, void* other)
     // Cheapest first: the unconditional ones need no reaction lookup.
     if (g_spellBlockAll && UnitHasAura(other, g_spellBlockAll))
         return true;
-    // The mover's own mutual aura recruits blockers - by default only PLAYER
-    // blockers. The enumeration mask resolves creatures, pets and totems too,
-    // but no server stream stops a player against an unbuffed NPC, so clipping
-    // a remote there is divergence (bounded by the debt ledger, but nonzero).
-    // NpcBlockers = 1 opts back in to NPCs for servers that want solid crowds.
-    // An NPC deliberately GIVEN a collision aura still blocks via the
-    // other-side checks regardless - aura state is replicated, every client
-    // agrees about it.
+    // The mover's own mutual aura recruits blockers. NpcBlockers (default ON)
+    // decides whether that includes creatures, pets and totems: solid crowds,
+    // at the cost that a mover whose stream does not stop at an NPC (playerbot,
+    // deleted DLL) leans through it on the tether instead of hard-stopping.
+    // With it off, only players are recruited. An NPC deliberately GIVEN a
+    // collision aura blocks via the other-side checks regardless - aura state
+    // is replicated, every client agrees about it.
     if (g_spellCollideAll &&
         (UnitHasAura(other, g_spellCollideAll) ||
          (UnitHasAura(me, g_spellCollideAll) &&
@@ -1021,18 +1023,26 @@ static int g_syncPredicted = 1;       // compensate [CMovement+0x4C] drift
 // are never touched and render exactly the authoritative stream (they can
 // dead-reckon through bodies again, but they can never port).
 //
-// With it on, every remote carries a DEBT LEDGER. What we shorten for a remote
-// is not free extrapolation - it is the catch-up toward its network-driven base
-// at [CMovement+0x4C], and the server does not honour our constraint. Every
-// yard refused is divergence from where the unit really is, and it discharges
-// in ONE frame as soon as the clip stops applying - classically at the rim of
-// the circle, the same corner-teleport the local player had before
-// SyncPredicted. The base fixup cannot be extended to remotes (their +0x4C is
-// rebased from every movement packet), so instead we bound the error: refuse at
-// most RemoteDebtCap yards, then stand aside and let the unit converge to its
-// true position until the debt drains.
-static int   g_clipRemotes   = 1;
-static float g_remoteDebtCap = 0.5f;  // yards refused before standing aside
+// With it on, remote PLAYERS are clipped on a SOFT TETHER. What we shorten for
+// a remote is not free extrapolation - it is the catch-up toward its
+// network-driven base at [CMovement+0x4C], and the server does not honour our
+// constraint, so any distance refused is divergence from where the unit really
+// is and MUST discharge eventually. Refusing without bound is what produced the
+// multi-yard rim ports (v1.00007); by symmetry, standing aside too eagerly
+// renders no collision at all (the v1.00008 ledger, whose accrual re-counted
+// the same standing gap every frame - the delta IS the outstanding gap, not an
+// increment). The tether uses that same fact exactly: hold a remote at most
+// RemoteTether yards behind its authority, yield precisely the excess. A unit
+// whose stream really stops (a DLL'd player at a wall) never reaches the cap
+// and pins SOLID; a unit the server walks through (playerbot, deleted DLL)
+// presses in, hesitates, and squeezes through trailing the cap behind - a
+// packet rebase can never snap it further than the cap. Stateless, exact.
+//
+// Creature movers are never clipped: no server stream stops an NPC or pet at a
+// player body, so pinning one here only makes it stutter against everyone
+// carrying the global aura.
+static int   g_clipRemotes  = 1;
+static float g_remoteTether = 0.8f;   // max yards a remote is held behind its authority
 
 // Stand-on-players. OFF by default and INSTALL-gated: with it off the ground
 // hook is never applied, so the DLL behaves exactly as it did before the feature
@@ -1493,30 +1503,6 @@ static void ZProbe(void* self, float px, float py, float pz)
         Log("ZProbe: myZ=%.3f near=%d%s", pz, c.n, c.buf);
 }
 
-// -------------- remote catch-up debt (see the comment at g_clipRemotes) ------
-struct RemoteDebt {
-    DWORD lo, hi;       // unit guid
-    float owed;         // yards of movement we have refused this unit
-    DWORD last;         // last visit tick, for decay and slot recycling
-    int   released;     // 1 = standing aside while the unit converges
-};
-static RemoteDebt g_debt[32];
-static const float kDebtDecayPerSec = 2.0f;   // drain rate; run speed is ~7
-
-static RemoteDebt* DebtSlot(DWORD lo, DWORD hi)
-{
-    RemoteDebt* oldest = &g_debt[0];
-    for (int i = 0; i < 32; ++i) {
-        if (g_debt[i].last && g_debt[i].lo == lo && g_debt[i].hi == hi)
-            return &g_debt[i];
-        if (g_debt[i].last < oldest->last)
-            oldest = &g_debt[i];
-    }
-    oldest->lo = lo; oldest->hi = hi;
-    oldest->owed = 0.0f; oldest->last = GetTickCount(); oldest->released = 0;
-    return oldest;
-}
-
 static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                                   float dx, float dy, float dz)
 {
@@ -1530,20 +1516,13 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
         unsigned __int64 guid = pGetActiveGuid();
         if (guid) {
             void* meLocal = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnitOrPlayer);
-            RemoteDebt* debt = NULL;
 
-            // Which unit owns this CMovement? Ours, or a REMOTE player's.
+            // Which unit owns this CMovement? Ours, or a REMOTE unit's.
             //
-            // Remote players are clipped too, so they visibly stop at a blocker
-            // instead of dead-reckoning through it and snapping back. But what
-            // we shorten for a remote is the CATCH-UP toward its network-driven
-            // base, which our constraint cannot actually stop - every yard
-            // refused is divergence from where the unit really is, and it
-            // discharges in one frame the moment the clip stops applying
-            // (classically at the rim of the circle: the corner-teleport the
-            // local player had before SyncPredicted). The base fixup cannot be
-            // extended to remotes - their +0x4C is rebased by every movement
-            // packet - so the debt ledger bounds the error instead.
+            // Remote PLAYERS are clipped on the soft tether (see the comment at
+            // g_clipRemotes): solid against movers whose own client stopped
+            // them, a bounded squeeze-through for movers the server walks
+            // through. Creature movers are the server's alone - hands off.
             void* mover = (BYTE*)self - kOff_Movement;
             if (mover != meLocal) {
                 // Not us - prove it really is a live unit before touching it,
@@ -1555,26 +1534,10 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     DWORD hi = *(DWORD*)((BYTE*)mover + kOff_GuidHigh);
                     if (pObjectPtr(lo, hi, kTypeMaskUnitOrPlayer) != mover)
                         mover = NULL;
+                    else if ((hi & 0xF0000000u) != 0)
+                        mover = NULL;               // creature/pet mover: server-owned
                     else if (!g_clipRemotes)
                         mover = NULL;               // hands-off switch
-                    else {
-                        debt = DebtSlot(lo, hi);
-                        DWORD now = GetTickCount();
-                        float dt = (now - debt->last) * 0.001f;
-                        if (dt > 1.0f) dt = 1.0f;   // stale slot: no decay dump
-                        debt->last = now;
-                        debt->owed -= kDebtDecayPerSec * dt;
-                        if (debt->owed < 0.0f)
-                            debt->owed = 0.0f;
-                        if (debt->released) {
-                            // Paying it back: hands off until most has drained,
-                            // with hysteresis so it does not flap at the cap.
-                            if (debt->owed <= 0.3f * g_remoteDebtCap)
-                                debt->released = 0;
-                            else
-                                mover = NULL;
-                        }
-                    }
                 }
             }
 
@@ -1637,16 +1600,20 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     shortx = odx - dx;               // what we removed
                     shorty = ody - dy;
 
-                    // Book what we refused this remote. Crossing the cap flips
-                    // it to released: a discharge the size of the cap, instead
-                    // of everything withheld since first contact.
-                    if (clipped && !isLocal && debt) {
-                        debt->owed += sqrtf(shortx * shortx + shorty * shorty);
-                        if (!debt->released && debt->owed >= g_remoteDebtCap) {
-                            debt->released = 1;
-                            if (g_debug)
-                                Log("remote debt: guid %08X owed %.2f -> standing aside",
-                                    debt->lo, debt->owed);
+                    // Soft tether. The delta handed to this hook is the WHOLE
+                    // outstanding gap (target - position), so what we just
+                    // refused IS the unit's total divergence, measured fresh
+                    // this frame - no accumulation, no per-unit state. Yield
+                    // everything beyond the cap: the unit is held at most
+                    // g_remoteTether behind its authority, which also bounds
+                    // what any packet rebase can snap. Blinks and charges pass
+                    // through naturally (refused >> cap -> nearly all yielded).
+                    if (clipped && !isLocal) {
+                        float r = sqrtf(shortx * shortx + shorty * shorty);
+                        if (r > g_remoteTether) {
+                            float give = (r - g_remoteTether) / r;
+                            dx += shortx * give;
+                            dy += shorty * give;
                         }
                     }
                     if (g_debug) {
@@ -1967,10 +1934,10 @@ void PlayerCollide_LoadSettings(const char* dir)
     g_syncPredicted = GetPrivateProfileIntA("PlayerCollide", "SyncPredicted", 1, ini);
     g_clipRemotes   = GetPrivateProfileIntA("PlayerCollide", "ClipRemotes", 1, ini);
     g_npcBlockers   = GetPrivateProfileIntA("PlayerCollide", "NpcBlockers", 1, ini);
-    GetPrivateProfileStringA("PlayerCollide", "RemoteDebtCap", "0.5", buf, sizeof(buf), ini);
-    g_remoteDebtCap = (float)atof(buf);
-    if (g_remoteDebtCap < 0.1f) g_remoteDebtCap = 0.1f;
-    if (g_remoteDebtCap > 5.0f) g_remoteDebtCap = 5.0f;
+    GetPrivateProfileStringA("PlayerCollide", "RemoteTether", "0.8", buf, sizeof(buf), ini);
+    g_remoteTether  = (float)atof(buf);
+    if (g_remoteTether < 0.1f) g_remoteTether = 0.1f;
+    if (g_remoteTether > 5.0f) g_remoteTether = 5.0f;
     g_standOnPlayers = GetPrivateProfileIntA("PlayerCollide", "StandOnPlayers", 0, ini);
     GetPrivateProfileStringA("PlayerCollide", "StandHeight", "1.2", buf, sizeof(buf), ini);
     g_standHeight = (float)atof(buf);
