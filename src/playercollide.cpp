@@ -1636,6 +1636,22 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     if (g_debug && isLocal)
                         ZProbe(me, px, py, pz);
 
+                    // Debug=2 forensics: the COMPLETE per-call position timeline
+                    // of every remote mover, unthrottled. Whatever writes the
+                    // deep-inside positions between our calls shows up here as
+                    // an inexplicable px jump with a millisecond timestamp.
+                    if (g_debug >= 2 && !isLocal)
+                        Log("rmt %08X t=%lu p=(%.2f,%.2f,%.2f) d=(%.3f,%.3f,%.3f)",
+                            remLo, GetTickCount(), px, py, pz, dx, dy, dz);
+                    if (g_debug >= 2 && isLocal) {
+                        static DWORD s_locL = 0;
+                        DWORD nloc = GetTickCount();
+                        if (nloc - s_locL >= 1000) {   // anchor: my own position
+                            s_locL = nloc;
+                            Log("loc t=%lu p=(%.2f,%.2f,%.2f)", nloc, px, py, pz);
+                        }
+                    }
+
                     // Vertical support: land on, and stay on, a body's top.
                     //
                     // 0x714B60 (the ground query) is never called for the local
@@ -2054,6 +2070,12 @@ static void __cdecl RemoteRawCommitFilter(void* mv, float* newPos)
     float px = *(float*)((BYTE*)mv + kOff_CMovementPos);
     float py = *(float*)((BYTE*)mv + kOff_CMovementPos + 4);
     float pz = *(float*)((BYTE*)mv + kOff_CMovementPos + 8);
+
+    // Debug=2 forensics: every raw-arm commit for a player mover, unthrottled.
+    if (g_debug >= 2)
+        Log("raw %08X t=%lu p=(%.2f,%.2f) new=(%.2f,%.2f) fl=%08X",
+            lo, GetTickCount(), px, py, newPos[0], newPos[1],
+            spline ? *(DWORD*)(spline + 0x20) : 0);
 
     // Shared pin history with ClipWrapper - same table, same v4 semantics, so
     // a unit that acquires or finishes a spline mid-contact hands off between
