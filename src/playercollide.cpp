@@ -1537,6 +1537,11 @@ struct RemoteTrack {
     float ex, ey;          // where our clip left them - expected next call
     DWORD lastSeen;        // tick of the last clip we applied (0 = free slot)
     DWORD suppressUntil;   // while (int)(suppressUntil - now) > 0: hands off
+    int   insideStreak;    // consecutive overrules that landed inside a body.
+                           // One is noise (measured: a wall-pressed player whose
+                           // packets never left the ring still produced isolated
+                           // INSIDE verdicts); a unit the authority walks through
+                           // lands deep inside on EVERY heartbeat. Suppress at 2.
 };
 static RemoteTrack g_track[16];
 
@@ -1566,6 +1571,7 @@ static RemoteTrack* TrackAlloc(DWORD lo, DWORD hi, DWORD now)
         return NULL;
     best->lo = lo; best->hi = hi;
     best->suppressUntil = now;
+    best->insideStreak = 0;
     return best;
 }
 
@@ -1693,23 +1699,32 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                             float jx = px - trk->ex, jy = py - trk->ey;
                             if (jx * jx + jy * jy > kRemoteSnapYd * kRemoteSnapYd) {
                                 float b2 = 1e18f, hx = 0.0f, hy = 0.0f;
-                                bool inside = false;
+                                float sd = 1e9f;
                                 if (FindNearestBlocker(me, px, py, pz,
                                                        2.0f * g_radius + 0.5f,
                                                        &b2, &hx, &hy)) {
                                     float nx, ny;
-                                    float sd = OctagonDist(px, py, hx, hy,
-                                                           2.0f * g_radius, &nx, &ny);
-                                    inside = (sd < -kInsideDepthYd);
+                                    sd = OctagonDist(px, py, hx, hy,
+                                                     2.0f * g_radius, &nx, &ny);
                                 }
-                                if (inside) {
-                                    trk->suppressUntil = now + kRemoteSuppressMs;
-                                    doClip = false;
+                                // One INSIDE landing is noise (measured: a
+                                // wall-pressed player whose packets never left
+                                // the ring still produced isolated verdicts);
+                                // a genuine pass-through lands inside on every
+                                // consecutive heartbeat. Two in a row = real.
+                                if (sd < -kInsideDepthYd) {
+                                    if (++trk->insideStreak >= 2) {
+                                        trk->suppressUntil = now + kRemoteSuppressMs;
+                                        doClip = false;
+                                    }
+                                } else {
+                                    trk->insideStreak = 0;
                                 }
                                 if (g_debug)
-                                    Log("remote pin overruled: guid %08X jumped %.2f landed %s",
+                                    Log("remote pin overruled: guid %08X jumped %.2f depth %.2f streak %d%s",
                                         remLo, sqrtf(jx * jx + jy * jy),
-                                        inside ? "INSIDE -> raw" : "outside -> keep pinning");
+                                        sd < 1e8f ? -sd : 0.0f, trk->insideStreak,
+                                        doClip ? "" : " -> raw");
                             }
                         }
                     }
@@ -2012,10 +2027,13 @@ static void __cdecl RemoteRawCommitFilter(void* mv, float* newPos)
     if (!g_enabled || !g_native || !g_clipRemotes || !AnyCollisionSpell())
         return;
 
-    // Knockback arcs (parabolic/falling splines) keep the raw path, mirroring
-    // the client's own 0x200 special case inside this arm.
+    // ACTIVE knockback arcs (parabolic/falling splines) keep the raw path,
+    // mirroring the client's own 0x200 special case inside this arm. A
+    // FINISHED spline (0x400) that once was a knockback keeps 0x200 set
+    // forever, and exempting it would trap the unit uncollided permanently -
+    // exactly the lingering-spline hole this hook exists to close.
     DWORD spline = *(DWORD*)((BYTE*)mv + 0xBC);
-    if (spline && (*(DWORD*)(spline + 0x20) & 0x200))
+    if (spline && (*(DWORD*)(spline + 0x20) & 0x600) == 0x200)
         return;
 
     // Same mover-identity proof as ClipWrapper.
@@ -2048,20 +2066,29 @@ static void __cdecl RemoteRawCommitFilter(void* mv, float* newPos)
         float jx = px - trk->ex, jy = py - trk->ey;
         if (jx * jx + jy * jy > kRemoteSnapYd * kRemoteSnapYd) {
             float b2 = 1e18f, hx = 0.0f, hy = 0.0f;
-            bool inside = false;
+            float sd = 1e9f;
             if (FindNearestBlocker(mover, px, py, pz,
                                    2.0f * g_radius + 0.5f, &b2, &hx, &hy)) {
                 float nx, ny;
-                float sd = OctagonDist(px, py, hx, hy, 2.0f * g_radius, &nx, &ny);
-                inside = (sd < -kInsideDepthYd);
+                sd = OctagonDist(px, py, hx, hy, 2.0f * g_radius, &nx, &ny);
             }
-            if (inside) {
-                trk->suppressUntil = now + kRemoteSuppressMs;
-                if (g_debug)
-                    Log("remote pin overruled (raw arm): guid %08X jumped %.2f landed INSIDE -> raw",
-                        lo, sqrtf(jx * jx + jy * jy));
+            // Same two-consecutive rule as ClipWrapper (shared streak state).
+            bool release = false;
+            if (sd < -kInsideDepthYd) {
+                if (++trk->insideStreak >= 2) {
+                    trk->suppressUntil = now + kRemoteSuppressMs;
+                    release = true;
+                }
+            } else {
+                trk->insideStreak = 0;
+            }
+            if (g_debug)
+                Log("remote pin overruled (raw arm): guid %08X jumped %.2f depth %.2f streak %d%s",
+                    lo, sqrtf(jx * jx + jy * jy),
+                    sd < 1e8f ? -sd : 0.0f, trk->insideStreak,
+                    release ? " -> raw" : "");
+            if (release)
                 return;
-            }
         }
     }
 
