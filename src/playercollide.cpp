@@ -1039,22 +1039,20 @@ static int g_syncPredicted = 1;       // compensate [CMovement+0x4C] drift
 //  teleporting back, over and over" report, i.e. the exact artefact remote
 //  clipping exists to remove.
 //
-// The only signal that distinguishes the cases is the packet stream itself,
-// so that is what v3 uses. While pinning a unit we know exactly where we put
-// it; if its position then JUMPS (> kRemoteSnapYd) between calls, a packet
-// overruled our pin. Where it landed disambiguates further (v4, measured):
-// jumps that land OUTSIDE the body are their client sliding them around the
-// rim faster than our stale-facing simulation - accept the correction and
-// keep pinning; only a jump landing INSIDE the body proves the authority is
-// walking them through, and only then is the unit released for
-// kRemoteSuppressMs to render raw. Wall-pressed players never trigger any of
-// it (their packets agree with the pin): solid, permanent collision.
+// The only honest signal is the SERVER's own position for the unit, captured
+// by the movement-packet hook (PacketPosFilter) into the same track table.
+// v5: clip a remote unless the AUTHORITATIVE position is itself deep inside a
+// body (a bot / no-DLL mover the server steers through - arguing with it
+// ports). A wall-pressing player's own client holds them outside, so their
+// authoritative position is never deep-inside: they pin forever, solid. Every
+// inside position we compute by dead-reckoning them between packets is exactly
+// what must be clipped - earlier designs (v1-v4) mistook that self-inflicted
+// extrapolation for authority disagreement and released, which WAS the port.
 //
 // Creature movers are never clipped: no server stream stops an NPC or pet at a
 // player body, so pinning one here only makes it stutter against everyone
 // carrying the global aura.
 static int   g_clipRemotes = 1;
-static const float kRemoteSnapYd    = 0.6f;   // observed jump that counts as a packet overrule
 static const DWORD kRemoteSuppressMs = 2000;  // how long a disproven pin stays released
 
 // How deep inside the body a packet must land to count as a REAL pass-through.
@@ -1537,11 +1535,8 @@ struct RemoteTrack {
     float ex, ey;          // where our clip left them - expected next call
     DWORD lastSeen;        // tick of the last clip we applied (0 = free slot)
     DWORD suppressUntil;   // while (int)(suppressUntil - now) > 0: hands off
-    int   insideStreak;    // consecutive overrules that landed inside a body.
-                           // One is noise (measured: a wall-pressed player whose
-                           // packets never left the ring still produced isolated
-                           // INSIDE verdicts); a unit the authority walks through
-                           // lands deep inside on EVERY heartbeat. Suppress at 2.
+    float ax, ay;          // last AUTHORITATIVE position (from a movement packet)
+    DWORD aSeen;           // tick that authoritative position was recorded
 };
 static RemoteTrack g_track[16];
 
@@ -1571,8 +1566,80 @@ static RemoteTrack* TrackAlloc(DWORD lo, DWORD hi, DWORD now)
         return NULL;
     best->lo = lo; best->hi = hi;
     best->suppressUntil = now;
-    best->insideStreak = 0;
+    best->ax = best->ay = 0.0f;
+    best->aSeen = 0;
     return best;
+}
+
+// Is a remote's AUTHORITATIVE (last-packet) position itself inside a blocker?
+// This is the ONLY honest release signal. The clip hook cannot tell a
+// wall-pressing player (whose own client holds them OUTSIDE, so every inside
+// position we see is purely OUR dead-reckoning of them and must be clipped)
+// from a genuine pass-through (bot / no-DLL, whose server truth really is
+// inside and cannot be argued with) - both paint inside positions between
+// packets. The packet hook below records the server truth; only when THAT is
+// deep inside do we stand aside.
+static bool AuthorityInsideBody(RemoteTrack* trk, void* mover)
+{
+    if (!trk || !trk->aSeen)
+        return false;                       // no packet seen yet: assume outside
+    float b2 = 1e18f, hx = 0.0f, hy = 0.0f;
+    if (!FindNearestBlocker(mover, trk->ax, trk->ay,
+                            *(float*)((BYTE*)mover + kOff_PosZ),
+                            2.0f * g_radius + 0.5f, &b2, &hx, &hy))
+        return false;
+    float nx, ny;
+    float sd = OctagonDist(trk->ax, trk->ay, hx, hy, 2.0f * g_radius, &nx, &ny);
+    return sd < -kInsideDepthYd;
+}
+
+// ---------- movement-packet hook: capture each remote's SERVER TRUTH ----------
+//
+// 0x98BA90 hard-sets a unit's position straight from a movement packet (no
+// collision, no lerp - verified). Its argument carries the authoritative
+// coordinates. We only READ them, into the same RemoteTrack table the clip
+// uses, so the clip can base its release decision on where the SERVER put the
+// unit rather than on where our own extrapolation drifted it.
+static const DWORD kPktSite   = 0x0098BA90;
+static const BYTE  kPktSig[]  = { 0x55, 0x8B,0xEC, 0x8B,0x45,0x08 };  // push ebp; mov ebp,esp; mov eax,[ebp+8]
+static const DWORD kPktResume = 0x0098BA96;
+static BYTE*    g_trampPkt = NULL;
+
+static void __cdecl PacketPosFilter(void* cmovement, float* packetPos)
+{
+    if (!g_enabled || !g_clipRemotes || !pObjectPtr)
+        return;
+    if (!Readable(packetPos, 12))
+        return;
+    BYTE* unit = (BYTE*)cmovement - kOff_Movement;
+    if (!Readable(unit + kOff_GuidLow, 8))
+        return;
+    DWORD lo = *(DWORD*)(unit + kOff_GuidLow);
+    DWORD hi = *(DWORD*)(unit + kOff_GuidHigh);
+    if ((hi & 0xF0000000u) != 0)                       // creature/pet
+        return;
+    if (pObjectPtr(lo, hi, kTypeMaskUnitOrPlayer) != (void*)unit)
+        return;
+    RemoteTrack* trk = TrackFind(lo, hi);              // record ONLY for tracked units
+    if (!trk)
+        return;
+    trk->ax = packetPos[0];
+    trk->ay = packetPos[1];
+    trk->aSeen = GetTickCount();
+}
+
+__declspec(naked) static void PacketPosStub()
+{
+    __asm {
+        pushad
+        mov  eax, [esp+0x24]          // arg1 = MovementInfo* (ret at +0x20, arg1 at +0x24)
+        push eax                      // packetPos = &MovementInfo.x (first 3 floats)
+        push ecx                      // this = CMovement*
+        call PacketPosFilter
+        add  esp, 8
+        popad
+        jmp  dword ptr [g_trampPkt]   // stolen 6 bytes + jmp back to 0x98BA96
+    }
 }
 
 static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
@@ -1689,58 +1756,25 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                         }
                     }
 
-                    // Packet-overrule check. While we pin a unit, its position
-                    // next call must be exactly where our clip left it - the
-                    // only other writer is the packet path, which rebases
-                    // position directly. A jump means a packet moved them off
-                    // our pin. WHERE it moved them decides what it means:
-                    //
-                    //   OUTSIDE the body: their own client is sliding them
-                    //   around the rim and our simulation of that slide fell
-                    //   behind (their facing between heartbeats is stale, so
-                    //   our arc stalls while their steered arc advances -
-                    //   measured 0.6-3.6 yd per heartbeat). The rebase already
-                    //   corrected the render; accept it and KEEP PINNING from
-                    //   the new spot. Releasing to raw here was the in/out
-                    //   cycling: the raw ghost dives into the body every frame
-                    //   and every heartbeat yanks it back out.
-                    //
-                    //   INSIDE the body: the authority really is walking them
-                    //   through (playerbot, no DLL) - stop arguing, render raw
-                    //   for a while instead of pin/snap cycling.
+                    // Release decision, authoritative version. Clip a remote
+                    // UNLESS the server itself put the unit deep inside a body
+                    // (bot / no-DLL - the truth is inside, arguing with it
+                    // produces the pin/snap port). A wall-pressing player's own
+                    // client holds them OUTSIDE, so their authoritative position
+                    // is never deep-inside and we pin them forever - solid. The
+                    // inside positions WE compute by dead-reckoning them between
+                    // packets are exactly what must be clipped, never released.
                     bool doClip = true;
-                    if (!isLocal && trk) {
+                    if (!isLocal && trk && AuthorityInsideBody(trk, me)) {
                         DWORD now = GetTickCount();
-                        if ((DWORD)(now - trk->lastSeen) < 250) {
-                            float jx = px - trk->ex, jy = py - trk->ey;
-                            if (jx * jx + jy * jy > kRemoteSnapYd * kRemoteSnapYd) {
-                                float b2 = 1e18f, hx = 0.0f, hy = 0.0f;
-                                float sd = 1e9f;
-                                if (FindNearestBlocker(me, px, py, pz,
-                                                       2.0f * g_radius + 0.5f,
-                                                       &b2, &hx, &hy)) {
-                                    float nx, ny;
-                                    sd = OctagonDist(px, py, hx, hy,
-                                                     2.0f * g_radius, &nx, &ny);
-                                }
-                                // One INSIDE landing is noise (measured: a
-                                // wall-pressed player whose packets never left
-                                // the ring still produced isolated verdicts);
-                                // a genuine pass-through lands inside on every
-                                // consecutive heartbeat. Two in a row = real.
-                                if (sd < -kInsideDepthYd) {
-                                    if (++trk->insideStreak >= 2) {
-                                        trk->suppressUntil = now + kRemoteSuppressMs;
-                                        doClip = false;
-                                    }
-                                } else {
-                                    trk->insideStreak = 0;
-                                }
-                                if (g_debug)
-                                    Log("remote pin overruled: guid %08X jumped %.2f depth %.2f streak %d%s",
-                                        remLo, sqrtf(jx * jx + jy * jy),
-                                        sd < 1e8f ? -sd : 0.0f, trk->insideStreak,
-                                        doClip ? "" : " -> raw");
+                        trk->suppressUntil = now + kRemoteSuppressMs;
+                        doClip = false;
+                        if (g_debug) {
+                            static DWORD s_ov = 0;
+                            if (now - s_ov >= 250) {
+                                s_ov = now;
+                                Log("remote release: guid %08X authority INSIDE (a=%.2f,%.2f) -> raw",
+                                    remLo, trk->ax, trk->ay);
                             }
                         }
                     }
@@ -2083,35 +2117,13 @@ static void __cdecl RemoteRawCommitFilter(void* mv, float* newPos)
     RemoteTrack* trk = TrackFind(lo, hi);
     DWORD now = GetTickCount();
     if (trk && (int)(trk->suppressUntil - now) > 0)
-        return;                                      // packet-disproven pin: raw
-    if (trk && (DWORD)(now - trk->lastSeen) < 250) {
-        float jx = px - trk->ex, jy = py - trk->ey;
-        if (jx * jx + jy * jy > kRemoteSnapYd * kRemoteSnapYd) {
-            float b2 = 1e18f, hx = 0.0f, hy = 0.0f;
-            float sd = 1e9f;
-            if (FindNearestBlocker(mover, px, py, pz,
-                                   2.0f * g_radius + 0.5f, &b2, &hx, &hy)) {
-                float nx, ny;
-                sd = OctagonDist(px, py, hx, hy, 2.0f * g_radius, &nx, &ny);
-            }
-            // Same two-consecutive rule as ClipWrapper (shared streak state).
-            bool release = false;
-            if (sd < -kInsideDepthYd) {
-                if (++trk->insideStreak >= 2) {
-                    trk->suppressUntil = now + kRemoteSuppressMs;
-                    release = true;
-                }
-            } else {
-                trk->insideStreak = 0;
-            }
-            if (g_debug)
-                Log("remote pin overruled (raw arm): guid %08X jumped %.2f depth %.2f streak %d%s",
-                    lo, sqrtf(jx * jx + jy * jy),
-                    sd < 1e8f ? -sd : 0.0f, trk->insideStreak,
-                    release ? " -> raw" : "");
-            if (release)
-                return;
-        }
+        return;                                      // in a release window: raw
+    if (trk && AuthorityInsideBody(trk, mover)) {    // server truth is inside: raw
+        trk->suppressUntil = now + kRemoteSuppressMs;
+        if (g_debug)
+            Log("remote release (raw arm): guid %08X authority INSIDE (a=%.2f,%.2f)",
+                lo, trk->ax, trk->ay);
+        return;
     }
 
     // The clamp. Same delta convention as the clip arm uses: re-anchored to
@@ -2363,6 +2375,20 @@ void PlayerCollide_Install()
                 Log("remote ghost clamp ARMED (raw-commit arm of the integrator)");
             else
                 Log("remote ghost clamp OFF - finished-spline remotes render raw as before");
+
+            // Movement-packet hook: records each remote's authoritative
+            // position so the clip can release only on server truth, never on
+            // our own between-packet dead-reckoning. Read-only; a mismatch just
+            // means the release falls back to never-releasing (pin always),
+            // which is correct for players and only over-pins bots.
+            void* dummy2 = NULL;
+            if (VerifySig(kPktSite, kPktSig, sizeof(kPktSig), "movement packet apply") &&
+                InstallDetour(kPktSite, kPktSig, sizeof(kPktSig), kPktResume,
+                              PacketPosStub, &g_trampPkt, &dummy2,
+                              "movement packet apply"))
+                Log("authoritative-position capture ARMED (packet hook)");
+            else
+                Log("authoritative-position capture OFF - releases fall back to pin-always");
         }
     } else {
         // Legacy mode: correct the position after the mover has produced an
