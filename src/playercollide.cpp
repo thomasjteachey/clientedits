@@ -1971,6 +1971,141 @@ static bool Readable(const void* p, size_t n)
     return (const BYTE*)p + n <= (const BYTE*)mbi.BaseAddress + mbi.RegionSize;
 }
 
+// ============== remote ghost clamp: the integrator's raw-commit arm ==========
+//
+// The per-substep position integrator (0x6E9E20) routes a mover through the
+// collision clip 0x762E00 - our main hook - ONLY while [CMovement+0xBC] == 0.
+// Once a remote player completes ANY spline on this client (charge, knockback,
+// taxi, or the client's own movement-stop smoothing spline), the finished
+// spline object is freed only for the LOCAL player (the spline-done routine
+// guards the free with a guid compare at 0x6EAECB); for remotes it lingers
+// until a teleport or re-create. From then on EVERY dead-reckoning, heartbeat
+// chord-blend and spline substep for that unit takes the integrator's OTHER
+// arm - raw stores at 0x6E9EA0/A5/AC into CMovement+0x10..0x18 - bypassing the
+// clip hook entirely. That unhooked writer is what painted orbiting players
+// INSIDE bodies while their own packets sat on the ring (two-client log,
+// 2026-08-13), and why collision degraded per-unit per-session: the trap arms
+// the first time a unit splines, and everything after that is invisible to us.
+//
+// This detour sits at 0x6E9E91: after the arm decision (the local player can
+// never reach it - its guid compare routes it to the clip arm unconditionally),
+// after the x87 stack is emptied (both inbound flows pass the fstp x3), and
+// before the candidate position is loaded from the frame slots and committed.
+// eax/ecx/edx/edi are dead at the site (each is rewritten before use). We
+// clamp [ebp-0xC..-4] in place, so the original code commits the clamped
+// values and the transport transform downstream re-derives from them.
+static const DWORD kRawSite   = 0x006E9E91;
+static const BYTE  kRawSig[]  = { 0x8B,0x4D,0xF4, 0x8B,0x55,0xF8 };  // mov ecx,[ebp-0xC]; mov edx,[ebp-8]
+static const DWORD kRawResume = 0x006E9E97;
+// Wider identity check spanning the branch, the rebase call, the site and the
+// commit prologue - guards against a lookalike byte pair elsewhere.
+static const DWORD kRawCtx    = 0x006E9E88;
+static const BYTE  kRawCtxSig[] = { 0x75,0x07, 0x8B,0xCE, 0xE8,0xFF,0xE5,0x29,0x00,
+                                    0x8B,0x4D,0xF4, 0x8B,0x55,0xF8, 0x8B,0x7D,0x0C,
+                                    0x01,0x7E,0x60 };
+static BYTE*    g_trampRaw = NULL;
+static unsigned g_cRaw = 0, g_cRawClamped = 0;
+
+static void __cdecl RemoteRawCommitFilter(void* mv, float* newPos)
+{
+    ++g_cRaw;
+    if (!g_enabled || !g_native || !g_clipRemotes || !AnyCollisionSpell())
+        return;
+
+    // Knockback arcs (parabolic/falling splines) keep the raw path, mirroring
+    // the client's own 0x200 special case inside this arm.
+    DWORD spline = *(DWORD*)((BYTE*)mv + 0xBC);
+    if (spline && (*(DWORD*)(spline + 0x20) & 0x200))
+        return;
+
+    // Same mover-identity proof as ClipWrapper.
+    BYTE* mover = (BYTE*)mv - kOff_Movement;
+    if (!Readable(mover + kOff_GuidLow, 8))
+        return;
+    DWORD lo = *(DWORD*)(mover + kOff_GuidLow);
+    DWORD hi = *(DWORD*)(mover + kOff_GuidHigh);
+    if ((hi & 0xF0000000u) != 0)                     // creature/pet: server-owned
+        return;
+    if (pObjectPtr(lo, hi, kTypeMaskUnitOrPlayer) != (void*)mover)
+        return;
+    unsigned __int64 guid = pGetActiveGuid();
+    if (guid && pObjectPtr((DWORD)guid, (DWORD)(guid >> 32),
+                           kTypeMaskUnitOrPlayer) == (void*)mover)
+        return;      // structurally impossible on this arm; guard regardless
+
+    float px = *(float*)((BYTE*)mv + kOff_CMovementPos);
+    float py = *(float*)((BYTE*)mv + kOff_CMovementPos + 4);
+    float pz = *(float*)((BYTE*)mv + kOff_CMovementPos + 8);
+
+    // Shared pin history with ClipWrapper - same table, same v4 semantics, so
+    // a unit that acquires or finishes a spline mid-contact hands off between
+    // the two arms without losing its state.
+    RemoteTrack* trk = TrackFind(lo, hi);
+    DWORD now = GetTickCount();
+    if (trk && (int)(trk->suppressUntil - now) > 0)
+        return;                                      // packet-disproven pin: raw
+    if (trk && (DWORD)(now - trk->lastSeen) < 250) {
+        float jx = px - trk->ex, jy = py - trk->ey;
+        if (jx * jx + jy * jy > kRemoteSnapYd * kRemoteSnapYd) {
+            float b2 = 1e18f, hx = 0.0f, hy = 0.0f;
+            bool inside = false;
+            if (FindNearestBlocker(mover, px, py, pz,
+                                   2.0f * g_radius + 0.5f, &b2, &hx, &hy)) {
+                float nx, ny;
+                float sd = OctagonDist(px, py, hx, hy, 2.0f * g_radius, &nx, &ny);
+                inside = (sd < -kInsideDepthYd);
+            }
+            if (inside) {
+                trk->suppressUntil = now + kRemoteSuppressMs;
+                if (g_debug)
+                    Log("remote pin overruled (raw arm): guid %08X jumped %.2f landed INSIDE -> raw",
+                        lo, sqrtf(jx * jx + jy * jy));
+                return;
+            }
+        }
+    }
+
+    // The clamp. Same delta convention as the clip arm uses: re-anchored to
+    // the CURRENT position (+0x10), not the integration base.
+    float dx = newPos[0] - px, dy = newPos[1] - py;
+    float odx = dx, ody = dy;
+    ClipDelta(mover, px, py, pz, /*isLocal=*/false, &dx, &dy);
+    if (dx != odx || dy != ody) {
+        newPos[0] = px + dx;
+        newPos[1] = py + dy;
+        ++g_cRawClamped;
+        if (!trk)
+            trk = TrackAlloc(lo, hi, now);
+        if (g_debug) {
+            static DWORD s_l = 0;
+            if (now - s_l >= 250) {
+                s_l = now;
+                Log("rawclamp: guid %08X d=(%.3f,%.3f)->(%.3f,%.3f) raw=%u clamped=%u",
+                    lo, odx, ody, dx, dy, g_cRaw, g_cRawClamped);
+            }
+        }
+    }
+    if (trk) {
+        trk->ex = newPos[0];
+        trk->ey = newPos[1];
+        trk->lastSeen = now ? now : 1;
+    }
+}
+
+__declspec(naked) static void RawCommitStub()
+{
+    __asm {
+        pushad                        // eax/ecx/edx/edi are dead at the site; insurance
+        lea  eax, [ebp-0xC]           // candidate {x,y,z} in the integrator's frame
+        push eax
+        push esi                      // CMovement*
+        call RemoteRawCommitFilter
+        add  esp, 8
+        popad
+        jmp  dword ptr [g_trampRaw]   // stolen 6 bytes + jmp back to 0x6E9E97
+    }
+}
+
 static bool VerifySig(DWORD addr, const BYTE* sig, size_t n, const char* name)
 {
     if (!Readable((void*)addr, n)) {
@@ -2163,6 +2298,22 @@ void PlayerCollide_Install()
                            "movement clip")) {
             g_enabled = 0;
             return;
+        }
+
+        // Second arm of the same integrator: the raw-commit path that bypasses
+        // the clip once a remote's finished spline lingers (see kRawSite).
+        // Optional - a mismatch means finished-spline remotes render raw
+        // exactly as they did before this hook existed, never fatal.
+        if (g_clipRemotes) {
+            void* dummy = NULL;
+            if (VerifySig(kRawCtx, kRawCtxSig, sizeof(kRawCtxSig),
+                          "integrator raw-commit (context)") &&
+                InstallDetour(kRawSite, kRawSig, sizeof(kRawSig), kRawResume,
+                              RawCommitStub, &g_trampRaw, &dummy,
+                              "integrator raw-commit"))
+                Log("remote ghost clamp ARMED (raw-commit arm of the integrator)");
+            else
+                Log("remote ghost clamp OFF - finished-spline remotes render raw as before");
         }
     } else {
         // Legacy mode: correct the position after the mover has produced an
