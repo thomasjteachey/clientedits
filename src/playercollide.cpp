@@ -899,11 +899,30 @@ static int g_spellBlockAll       = 90211;   // Immovable
 static int g_spellCollideEnemies = 90212;   // Bodycheck
 static int g_spellCollideAll     = 90213;   // Solid Form
 
+// Do the mover's own mutual auras (Bodycheck/Solid Form) recruit NON-player
+// blockers - creatures, pets, totems? Sound for your OWN movement (your client
+// stops you and your reported position is the authority, so everyone agrees),
+// and between DLL'd players it stays consistent because every client stops at
+// the same bodies. The cost is rendering units whose stream does NOT stop
+// there - playerbots, DLL-less clients - which lean through the NPC up to
+// RemoteDebtCap and converge, instead of hard-blocking. An NPC deliberately
+// GIVEN a collision aura blocks regardless of this switch.
+static int g_npcBlockers = 1;
+
 static bool IsHostileTo(void* me, void* other)
 {
     if (!pGetReaction || !me || !other)
         return false;
     return pGetReaction(me, other) <= 1;             // same test the client uses
+}
+
+// World-object HighGuids (creatures 0xF130, pets 0xF140, vehicles, transports,
+// GOs...) all start with an F nibble; player guids are plain counters with a
+// zero high dword. Cheap, and needs no object-manager round trip.
+static bool IsPlayerObject(void* unit)
+{
+    DWORD hi = *(DWORD*)((BYTE*)unit + kOff_GuidHigh);
+    return (hi & 0xF0000000u) == 0;
 }
 
 // Does `other` block `me`? `me` is our unit, `other` a candidate blocker.
@@ -915,14 +934,25 @@ static bool BlocksMe(void* me, void* other)
     // Cheapest first: the unconditional ones need no reaction lookup.
     if (g_spellBlockAll && UnitHasAura(other, g_spellBlockAll))
         return true;
+    // The mover's own mutual aura recruits blockers - by default only PLAYER
+    // blockers. The enumeration mask resolves creatures, pets and totems too,
+    // but no server stream stops a player against an unbuffed NPC, so clipping
+    // a remote there is divergence (bounded by the debt ledger, but nonzero).
+    // NpcBlockers = 1 opts back in to NPCs for servers that want solid crowds.
+    // An NPC deliberately GIVEN a collision aura still blocks via the
+    // other-side checks regardless - aura state is replicated, every client
+    // agrees about it.
     if (g_spellCollideAll &&
-        (UnitHasAura(other, g_spellCollideAll) || UnitHasAura(me, g_spellCollideAll)))
+        (UnitHasAura(other, g_spellCollideAll) ||
+         (UnitHasAura(me, g_spellCollideAll) &&
+          (g_npcBlockers || IsPlayerObject(other)))))
         return true;
 
     const bool wantHostile =
         (g_spellBlockEnemies   && UnitHasAura(other, g_spellBlockEnemies)) ||
         (g_spellCollideEnemies && (UnitHasAura(other, g_spellCollideEnemies) ||
-                                   UnitHasAura(me, g_spellCollideEnemies)));
+                                   (UnitHasAura(me, g_spellCollideEnemies) &&
+                                    (g_npcBlockers || IsPlayerObject(other)))));
     if (wantHostile && IsHostileTo(me, other))
         return true;
 
@@ -986,6 +1016,24 @@ static bool SegmentHitsCircle(float sx, float sy, float dx, float dy,
 // every call site (swept clip, contact state, depenetration) follows it.
 static int g_sides = 0;               // 0 = circle
 static int g_syncPredicted = 1;       // compensate [CMovement+0x4C] drift
+
+// Remote-unit clipping. ClipRemotes = 0 is the hands-off switch: remote units
+// are never touched and render exactly the authoritative stream (they can
+// dead-reckon through bodies again, but they can never port).
+//
+// With it on, every remote carries a DEBT LEDGER. What we shorten for a remote
+// is not free extrapolation - it is the catch-up toward its network-driven base
+// at [CMovement+0x4C], and the server does not honour our constraint. Every
+// yard refused is divergence from where the unit really is, and it discharges
+// in ONE frame as soon as the clip stops applying - classically at the rim of
+// the circle, the same corner-teleport the local player had before
+// SyncPredicted. The base fixup cannot be extended to remotes (their +0x4C is
+// rebased from every movement packet), so instead we bound the error: refuse at
+// most RemoteDebtCap yards, then stand aside and let the unit converge to its
+// true position until the debt drains.
+static int   g_clipRemotes   = 1;
+static float g_remoteDebtCap = 0.5f;  // yards refused before standing aside
+
 // Stand-on-players. OFF by default and INSTALL-gated: with it off the ground
 // hook is never applied, so the DLL behaves exactly as it did before the feature
 // existed. Nothing about normal collision changes either way.
@@ -1216,8 +1264,13 @@ static void ClipDelta(void* unitSelf, float px, float py, float pz,
                 if (into < 0.0f) {
                     remx -= nx * into;               // cancel motion into the body
                     remy -= ny * into;
-                    remx *= g_slideFriction;         // damp the tangential remainder
-                    remy *= g_slideFriction;
+                    // Friction is a local FEEL feature. A remote's motion is the
+                    // catch-up toward where the network says it is - damping that
+                    // only makes our copy lag its true position and desyncs.
+                    if (isLocal) {
+                        remx *= g_slideFriction;     // damp the tangential remainder
+                        remy *= g_slideFriction;
+                    }
                 }
             }
         }
@@ -1256,8 +1309,11 @@ static void ClipDelta(void* unitSelf, float px, float py, float pz,
             // cylinder it preserves almost all of your speed on a glancing hit and
             // slings you around them. Damping the tangential part is what makes
             // contact read as bumping into a person rather than a greased pole.
-            remx *= g_slideFriction;
-            remy *= g_slideFriction;
+            // Local only: for a remote it just lags them behind their true path.
+            if (isLocal) {
+                remx *= g_slideFriction;
+                remy *= g_slideFriction;
+            }
         }
     }
     float outx = totx + remx, outy = toty + remy;
@@ -1374,6 +1430,93 @@ static int __cdecl StandCb(DWORD guidLo, DWORD guidHi, void* arg)
     return 1;
 }
 
+// ===== diagnostic: what Z does THIS client hold for the bodies next to us? ====
+//
+// Standing on someone works on the stander's own screen but the observer sees
+// them on the floor. Two very different causes produce exactly that, and they
+// need fixes in opposite places, so measure instead of guessing:
+//
+//   observer logs the stander's z ~= +StandHeight -> the stander DID report the
+//       elevated Z and the observer is re-snapping it to its own terrain; the
+//       fix belongs in the remote-unit path, and making the local client
+//       "believe" harder would change nothing.
+//   observer logs the stander's z ~= ground       -> the stander never reported
+//       it. Our support is applied after the client has already decided where
+//       it is, so the fix is to make the client genuinely resolve against the
+//       body (inject into the sweep) so its own packets carry the height.
+//
+// Run with Debug = 1 on BOTH clients, stand on the other character, and compare.
+struct ZProbeCtx {
+    void* self;
+    float px, py, pz;
+    int   n;
+    int   used;
+    char  buf[256];
+};
+
+static int __cdecl ZProbeCb(DWORD guidLo, DWORD guidHi, void* arg)
+{
+    ZProbeCtx* c = (ZProbeCtx*)arg;
+    void* o = pObjectPtr(guidLo, guidHi, kTypeMaskUnitOrPlayer);
+    if (!o || o == c->self)
+        return 1;
+
+    float ox = *(float*)((BYTE*)o + kOff_PosX);
+    float oy = *(float*)((BYTE*)o + kOff_PosY);
+    float oz = *(float*)((BYTE*)o + kOff_PosZ);
+    float dx = ox - c->px, dy = oy - c->py;
+    float d2 = dx * dx + dy * dy;
+    if (d2 > 9.0f)                        // only bodies we could plausibly be on
+        return 1;
+
+    ++c->n;
+    if (c->n <= 3)
+        c->used += _snprintf_s(c->buf + c->used, sizeof(c->buf) - c->used, _TRUNCATE,
+                               " [%08X d=%.2f z=%.3f dz=%+.3f]",
+                               guidLo, sqrtf(d2), oz, oz - c->pz);
+    return 1;
+}
+
+static void ZProbe(void* self, float px, float py, float pz)
+{
+    static DWORD s_lastZProbe = 0;
+    DWORD now = GetTickCount();
+    if (now - s_lastZProbe < 250)          // 4 Hz is plenty to compare two logs
+        return;
+    s_lastZProbe = now;
+
+    ZProbeCtx c;
+    c.self = self; c.px = px; c.py = py; c.pz = pz;
+    c.n = 0; c.used = 0; c.buf[0] = 0;
+    pEnumVisible(ZProbeCb, &c);
+    if (c.n > 0)
+        Log("ZProbe: myZ=%.3f near=%d%s", pz, c.n, c.buf);
+}
+
+// -------------- remote catch-up debt (see the comment at g_clipRemotes) ------
+struct RemoteDebt {
+    DWORD lo, hi;       // unit guid
+    float owed;         // yards of movement we have refused this unit
+    DWORD last;         // last visit tick, for decay and slot recycling
+    int   released;     // 1 = standing aside while the unit converges
+};
+static RemoteDebt g_debt[32];
+static const float kDebtDecayPerSec = 2.0f;   // drain rate; run speed is ~7
+
+static RemoteDebt* DebtSlot(DWORD lo, DWORD hi)
+{
+    RemoteDebt* oldest = &g_debt[0];
+    for (int i = 0; i < 32; ++i) {
+        if (g_debt[i].last && g_debt[i].lo == lo && g_debt[i].hi == hi)
+            return &g_debt[i];
+        if (g_debt[i].last < oldest->last)
+            oldest = &g_debt[i];
+    }
+    oldest->lo = lo; oldest->hi = hi;
+    oldest->owed = 0.0f; oldest->last = GetTickCount(); oldest->released = 0;
+    return oldest;
+}
+
 static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                                   float dx, float dy, float dz)
 {
@@ -1387,18 +1530,20 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
         unsigned __int64 guid = pGetActiveGuid();
         if (guid) {
             void* meLocal = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnitOrPlayer);
+            RemoteDebt* debt = NULL;
 
             // Which unit owns this CMovement? Ours, or a REMOTE player's.
             //
-            // Remote players matter as much as we do. Their client stops them at
-            // a blocker, but ours keeps dead-reckoning them straight through it
-            // between heartbeats, and every heartbeat then snaps them back - the
-            // "other players teleport around over and over" artefact. A real wall
-            // never does this because our client extrapolates them against the
-            // same world geometry. Clipping their interpolation the same way we
-            // clip our own restores that: they stop at the body instead of
-            // oscillating through it. We only shorten the extrapolated step, so
-            // an authoritative position update still lands normally.
+            // Remote players are clipped too, so they visibly stop at a blocker
+            // instead of dead-reckoning through it and snapping back. But what
+            // we shorten for a remote is the CATCH-UP toward its network-driven
+            // base, which our constraint cannot actually stop - every yard
+            // refused is divergence from where the unit really is, and it
+            // discharges in one frame the moment the clip stops applying
+            // (classically at the rim of the circle: the corner-teleport the
+            // local player had before SyncPredicted). The base fixup cannot be
+            // extended to remotes - their +0x4C is rebased by every movement
+            // packet - so the debt ledger bounds the error instead.
             void* mover = (BYTE*)self - kOff_Movement;
             if (mover != meLocal) {
                 // Not us - prove it really is a live unit before touching it,
@@ -1410,6 +1555,26 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     DWORD hi = *(DWORD*)((BYTE*)mover + kOff_GuidHigh);
                     if (pObjectPtr(lo, hi, kTypeMaskUnitOrPlayer) != mover)
                         mover = NULL;
+                    else if (!g_clipRemotes)
+                        mover = NULL;               // hands-off switch
+                    else {
+                        debt = DebtSlot(lo, hi);
+                        DWORD now = GetTickCount();
+                        float dt = (now - debt->last) * 0.001f;
+                        if (dt > 1.0f) dt = 1.0f;   // stale slot: no decay dump
+                        debt->last = now;
+                        debt->owed -= kDebtDecayPerSec * dt;
+                        if (debt->owed < 0.0f)
+                            debt->owed = 0.0f;
+                        if (debt->released) {
+                            // Paying it back: hands off until most has drained,
+                            // with hysteresis so it does not flap at the cap.
+                            if (debt->owed <= 0.3f * g_remoteDebtCap)
+                                debt->released = 0;
+                            else
+                                mover = NULL;
+                        }
+                    }
                 }
             }
 
@@ -1423,6 +1588,11 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     float odx = dx, ody = dy;
                     float pz = *(float*)((BYTE*)self + kOff_CMovementPos + 8);
                     bool const isLocal = (mover == meLocal);
+
+                    // Log everyone's Z as this client holds it, so two clients'
+                    // logs can be compared while one stands on the other.
+                    if (g_debug && isLocal)
+                        ZProbe(me, px, py, pz);
 
                     // Vertical support: land on, and stay on, a body's top.
                     //
@@ -1466,6 +1636,19 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     clipped = (dx != odx) || (dy != ody);
                     shortx = odx - dx;               // what we removed
                     shorty = ody - dy;
+
+                    // Book what we refused this remote. Crossing the cap flips
+                    // it to released: a discharge the size of the cap, instead
+                    // of everything withheld since first contact.
+                    if (clipped && !isLocal && debt) {
+                        debt->owed += sqrtf(shortx * shortx + shorty * shorty);
+                        if (!debt->released && debt->owed >= g_remoteDebtCap) {
+                            debt->released = 1;
+                            if (g_debug)
+                                Log("remote debt: guid %08X owed %.2f -> standing aside",
+                                    debt->lo, debt->owed);
+                        }
+                    }
                     if (g_debug) {
                         static DWORD s_l = 0;
                         DWORD n = GetTickCount();
@@ -1782,6 +1965,12 @@ void PlayerCollide_LoadSettings(const char* dir)
     g_spellCollideEnemies = GetPrivateProfileIntA("PlayerCollide", "SpellCollideEnemies", 90212, ini);
     g_spellCollideAll     = GetPrivateProfileIntA("PlayerCollide", "SpellCollideAll", 90213, ini);
     g_syncPredicted = GetPrivateProfileIntA("PlayerCollide", "SyncPredicted", 1, ini);
+    g_clipRemotes   = GetPrivateProfileIntA("PlayerCollide", "ClipRemotes", 1, ini);
+    g_npcBlockers   = GetPrivateProfileIntA("PlayerCollide", "NpcBlockers", 1, ini);
+    GetPrivateProfileStringA("PlayerCollide", "RemoteDebtCap", "0.5", buf, sizeof(buf), ini);
+    g_remoteDebtCap = (float)atof(buf);
+    if (g_remoteDebtCap < 0.1f) g_remoteDebtCap = 0.1f;
+    if (g_remoteDebtCap > 5.0f) g_remoteDebtCap = 5.0f;
     g_standOnPlayers = GetPrivateProfileIntA("PlayerCollide", "StandOnPlayers", 0, ini);
     GetPrivateProfileStringA("PlayerCollide", "StandHeight", "1.2", buf, sizeof(buf), ini);
     g_standHeight = (float)atof(buf);
