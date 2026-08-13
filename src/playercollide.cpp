@@ -1039,14 +1039,16 @@ static int g_syncPredicted = 1;       // compensate [CMovement+0x4C] drift
 //  teleporting back, over and over" report, i.e. the exact artefact remote
 //  clipping exists to remove.
 //
-// The only signal that distinguishes the two cases is the packet stream
-// itself, so that is what v3 uses. While pinning a unit we know exactly where
-// we put it; if its position then JUMPS (> kRemoteSnapYd) between calls, a
-// packet overruled our pin - the authority really is walking it through - so
-// that unit is released for kRemoteSuppressMs and renders raw. Wall-pressed
-// players never trigger it (their packets agree with the pin): solid,
-// permanent collision. Bots and pass-throughs trigger it on the first
-// heartbeat and move smoothly instead of pin/snap cycling.
+// The only signal that distinguishes the cases is the packet stream itself,
+// so that is what v3 uses. While pinning a unit we know exactly where we put
+// it; if its position then JUMPS (> kRemoteSnapYd) between calls, a packet
+// overruled our pin. Where it landed disambiguates further (v4, measured):
+// jumps that land OUTSIDE the body are their client sliding them around the
+// rim faster than our stale-facing simulation - accept the correction and
+// keep pinning; only a jump landing INSIDE the body proves the authority is
+// walking them through, and only then is the unit released for
+// kRemoteSuppressMs to render raw. Wall-pressed players never trigger any of
+// it (their packets agree with the pin): solid, permanent collision.
 //
 // Creature movers are never clipped: no server stream stops an NPC or pet at a
 // player body, so pinning one here only makes it stutter against everyone
@@ -1658,22 +1660,46 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                     // Packet-overrule check. While we pin a unit, its position
                     // next call must be exactly where our clip left it - the
                     // only other writer is the packet path, which rebases
-                    // position directly. A jump means the authority moved them
-                    // off our pin (their client let them pass, or they have no
-                    // client at all): stop arguing and render that unit raw
-                    // for a while, instead of pin/snap cycling every heartbeat.
+                    // position directly. A jump means a packet moved them off
+                    // our pin. WHERE it moved them decides what it means:
+                    //
+                    //   OUTSIDE the body: their own client is sliding them
+                    //   around the rim and our simulation of that slide fell
+                    //   behind (their facing between heartbeats is stale, so
+                    //   our arc stalls while their steered arc advances -
+                    //   measured 0.6-3.6 yd per heartbeat). The rebase already
+                    //   corrected the render; accept it and KEEP PINNING from
+                    //   the new spot. Releasing to raw here was the in/out
+                    //   cycling: the raw ghost dives into the body every frame
+                    //   and every heartbeat yanks it back out.
+                    //
+                    //   INSIDE the body: the authority really is walking them
+                    //   through (playerbot, no DLL) - stop arguing, render raw
+                    //   for a while instead of pin/snap cycling.
                     bool doClip = true;
                     if (!isLocal && trk) {
                         DWORD now = GetTickCount();
                         if ((DWORD)(now - trk->lastSeen) < 250) {
                             float jx = px - trk->ex, jy = py - trk->ey;
                             if (jx * jx + jy * jy > kRemoteSnapYd * kRemoteSnapYd) {
-                                trk->suppressUntil = now + kRemoteSuppressMs;
-                                doClip = false;
+                                float b2 = 1e18f, hx = 0.0f, hy = 0.0f;
+                                bool inside = false;
+                                if (FindNearestBlocker(me, px, py, pz,
+                                                       2.0f * g_radius + 0.5f,
+                                                       &b2, &hx, &hy)) {
+                                    float nx, ny;
+                                    float sd = OctagonDist(px, py, hx, hy,
+                                                           2.0f * g_radius, &nx, &ny);
+                                    inside = (sd < -0.15f);   // clearly overlapping
+                                }
+                                if (inside) {
+                                    trk->suppressUntil = now + kRemoteSuppressMs;
+                                    doClip = false;
+                                }
                                 if (g_debug)
-                                    Log("remote pin overruled: guid %08X jumped %.2f -> raw for %lums",
+                                    Log("remote pin overruled: guid %08X jumped %.2f landed %s",
                                         remLo, sqrtf(jx * jx + jy * jy),
-                                        (unsigned long)kRemoteSuppressMs);
+                                        inside ? "INSIDE -> raw" : "outside -> keep pinning");
                             }
                         }
                     }
