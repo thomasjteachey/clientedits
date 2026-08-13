@@ -1039,40 +1039,16 @@ static int g_syncPredicted = 1;       // compensate [CMovement+0x4C] drift
 //  teleporting back, over and over" report, i.e. the exact artefact remote
 //  clipping exists to remove.
 //
-// The only honest signal is the SERVER's own position for the unit, captured
-// by the movement-packet hook (PacketPosFilter) into the same track table.
-// v5: clip a remote unless the AUTHORITATIVE position is itself deep inside a
-// body (a bot / no-DLL mover the server steers through - arguing with it
-// ports). A wall-pressing player's own client holds them outside, so their
-// authoritative position is never deep-inside: they pin forever, solid. Every
-// inside position we compute by dead-reckoning them between packets is exactly
-// what must be clipped - earlier designs (v1-v4) mistook that self-inflicted
-// extrapolation for authority disagreement and released, which WAS the port.
-//
-// Creature movers are never clipped: no server stream stops an NPC or pet at a
-// player body, so pinning one here only makes it stutter against everyone
-// carrying the global aura.
-// DEFAULT OFF. Ten rounds of two-client instrumentation established that
-// re-rendering a remote's collision on YOUR screen fights the netcode and
-// cannot be made artefact-free: a remote's position is authoritative,
-// reconstructed by dead-reckoning between heartbeats, so every frame our clip
-// wins the server re-asserts a frame later - the "port through and back". It is
-// purely COSMETIC: mutual collision already works with this off, because each
-// client clips its OWN local player (you cannot walk through them; they cannot
-// walk through you). This only tried to draw the other side's stop locally, and
-// that redraw is the sole source of the porting. On for experiments only.
-static int   g_clipRemotes = 0;
-static const DWORD kRemoteSuppressMs = 2000;  // how long a disproven pin stays released
-
-// How deep inside the body a packet must land to count as a REAL pass-through.
-// Measured (2026-08-13, two-client orbit test): a legal graze rides at
-// face-depth -0.03..-0.19 - their client's depenetration deadband alone allows
-// 0.12, and near an octagon corner a point at Euclidean ~1.97 measures ~0.19
-// deep in face metric. An earlier threshold of 0.15 sat INSIDE that band, so
-// legitimate orbit packets flickered between verdicts and every false INSIDE
-// bought 2s of raw ghost - the in/out artefact. A genuine transit passes
-// through depth ~2.0, so 0.6 splits the populations with a wide margin.
-static const float kInsideDepthYd   = 0.6f;
+// Clip remote players the SAME way the client already clips their dead-reckoning
+// against world geometry: a plain, stateless, every-frame swept clip. This is
+// exactly why a remote never walks through a gameobject on your screen, and it
+// gives the same result against a player - they stop at the ring showing their
+// running-into animation, no porting. The port artefacts of earlier designs
+// (v1-v5: ledger, tether, pin, release/suppress, authority tracking) were all
+// self-inflicted by the divergence-management machinery layered on top; the
+// blocking player's own client clamps them at the ring and transmits THAT, so a
+// plain clip and their packets agree and nothing snaps - just like a GO. On.
+static int   g_clipRemotes = 1;
 
 // Stand-on-players. OFF by default and INSTALL-gated: with it off the ground
 // hook is never applied, so the DLL behaves exactly as it did before the feature
@@ -1536,121 +1512,6 @@ static void ZProbe(void* self, float px, float py, float pz)
         Log("ZProbe: myZ=%.3f near=%d%s", pz, c.n, c.buf);
 }
 
-// Per-unit pin tracking: where we left each clipped remote, so the next call
-// can tell "still where we put it" (packets agree with the pin) from "jumped"
-// (a packet overruled it). Only units actually being clipped occupy a slot.
-struct RemoteTrack {
-    DWORD lo, hi;          // unit guid
-    float ex, ey;          // where our clip left them - expected next call
-    DWORD lastSeen;        // tick of the last clip we applied (0 = free slot)
-    DWORD suppressUntil;   // while (int)(suppressUntil - now) > 0: hands off
-    float ax, ay;          // last AUTHORITATIVE position (from a movement packet)
-    DWORD aSeen;           // tick that authoritative position was recorded
-};
-static RemoteTrack g_track[16];
-
-static RemoteTrack* TrackFind(DWORD lo, DWORD hi)
-{
-    for (int i = 0; i < 16; ++i)
-        if (g_track[i].lastSeen && g_track[i].lo == lo && g_track[i].hi == hi)
-            return &g_track[i];
-    return NULL;
-}
-
-static RemoteTrack* TrackAlloc(DWORD lo, DWORD hi, DWORD now)
-{
-    RemoteTrack* best = &g_track[0];
-    DWORD bestAge = now - g_track[0].lastSeen;       // wrap-safe age
-    if (!g_track[0].lastSeen) bestAge = 0xFFFFFFFF;
-    for (int i = 1; i < 16; ++i) {
-        if (!g_track[i].lastSeen) { best = &g_track[i]; bestAge = 0xFFFFFFFF; break; }
-        DWORD age = now - g_track[i].lastSeen;
-        if (age > bestAge) { bestAge = age; best = &g_track[i]; }
-    }
-    // Never steal a slot from a unit still in contact (age under 3s): evicting
-    // a live pin would zero its history and un-release a disproven one. With
-    // the table full of live pins, the new unit simply goes untracked - it
-    // still gets pinned, it just cannot be auto-released until a slot frees.
-    if (bestAge < 3000)
-        return NULL;
-    best->lo = lo; best->hi = hi;
-    best->suppressUntil = now;
-    best->ax = best->ay = 0.0f;
-    best->aSeen = 0;
-    return best;
-}
-
-// Is a remote's AUTHORITATIVE (last-packet) position itself inside a blocker?
-// This is the ONLY honest release signal. The clip hook cannot tell a
-// wall-pressing player (whose own client holds them OUTSIDE, so every inside
-// position we see is purely OUR dead-reckoning of them and must be clipped)
-// from a genuine pass-through (bot / no-DLL, whose server truth really is
-// inside and cannot be argued with) - both paint inside positions between
-// packets. The packet hook below records the server truth; only when THAT is
-// deep inside do we stand aside.
-static bool AuthorityInsideBody(RemoteTrack* trk, void* mover)
-{
-    if (!trk || !trk->aSeen)
-        return false;                       // no packet seen yet: assume outside
-    float b2 = 1e18f, hx = 0.0f, hy = 0.0f;
-    if (!FindNearestBlocker(mover, trk->ax, trk->ay,
-                            *(float*)((BYTE*)mover + kOff_PosZ),
-                            2.0f * g_radius + 0.5f, &b2, &hx, &hy))
-        return false;
-    float nx, ny;
-    float sd = OctagonDist(trk->ax, trk->ay, hx, hy, 2.0f * g_radius, &nx, &ny);
-    return sd < -kInsideDepthYd;
-}
-
-// ---------- movement-packet hook: capture each remote's SERVER TRUTH ----------
-//
-// 0x98BA90 hard-sets a unit's position straight from a movement packet (no
-// collision, no lerp - verified). Its argument carries the authoritative
-// coordinates. We only READ them, into the same RemoteTrack table the clip
-// uses, so the clip can base its release decision on where the SERVER put the
-// unit rather than on where our own extrapolation drifted it.
-static const DWORD kPktSite   = 0x0098BA90;
-static const BYTE  kPktSig[]  = { 0x55, 0x8B,0xEC, 0x8B,0x45,0x08 };  // push ebp; mov ebp,esp; mov eax,[ebp+8]
-static const DWORD kPktResume = 0x0098BA96;
-static BYTE*    g_trampPkt = NULL;
-
-static void __cdecl PacketPosFilter(void* cmovement, float* packetPos)
-{
-    if (!g_enabled || !g_clipRemotes || !pObjectPtr)
-        return;
-    if (!Readable(packetPos, 12))
-        return;
-    BYTE* unit = (BYTE*)cmovement - kOff_Movement;
-    if (!Readable(unit + kOff_GuidLow, 8))
-        return;
-    DWORD lo = *(DWORD*)(unit + kOff_GuidLow);
-    DWORD hi = *(DWORD*)(unit + kOff_GuidHigh);
-    if ((hi & 0xF0000000u) != 0)                       // creature/pet
-        return;
-    if (pObjectPtr(lo, hi, kTypeMaskUnitOrPlayer) != (void*)unit)
-        return;
-    RemoteTrack* trk = TrackFind(lo, hi);              // record ONLY for tracked units
-    if (!trk)
-        return;
-    trk->ax = packetPos[0];
-    trk->ay = packetPos[1];
-    trk->aSeen = GetTickCount();
-}
-
-__declspec(naked) static void PacketPosStub()
-{
-    __asm {
-        pushad
-        mov  eax, [esp+0x24]          // arg1 = MovementInfo* (ret at +0x20, arg1 at +0x24)
-        push eax                      // packetPos = &MovementInfo.x (first 3 floats)
-        push ecx                      // this = CMovement*
-        call PacketPosFilter
-        add  esp, 8
-        popad
-        jmp  dword ptr [g_trampPkt]   // stolen 6 bytes + jmp back to 0x98BA96
-    }
-}
-
 static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                                   float dx, float dy, float dz)
 {
@@ -1665,13 +1526,18 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
         if (guid) {
             void* meLocal = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnitOrPlayer);
             DWORD remLo = 0, remHi = 0;
-            RemoteTrack* trk = NULL;
 
             // Which unit owns this CMovement? Ours, or a REMOTE unit's.
             //
-            // Remote PLAYERS are pinned at blockers, auto-released per unit on
-            // proof the server disagrees (see the comment at g_clipRemotes).
-            // Creature movers are the server's alone - hands off.
+            // Remote players are clipped exactly the way the client already
+            // clips their dead-reckoning against WORLD GEOMETRY (which is why a
+            // remote never walks through a gameobject on your screen): a plain,
+            // stateless, every-frame swept clip, composed BEFORE the client's
+            // own world clip in g_origClip. No pin, no release, no tracking -
+            // the blocking player's client clamps them at the ring and transmits
+            // that clamped position, so our clip and their packets agree and
+            // nothing snaps, just like a gameobject. Creature movers are the
+            // server's alone - hands off.
             void* mover = (BYTE*)self - kOff_Movement;
             if (mover != meLocal) {
                 // Not us - prove it really is a live unit before touching it,
@@ -1689,9 +1555,6 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                         mover = NULL;               // hands-off switch
                     else {
                         remLo = lo; remHi = hi;
-                        trk = TrackFind(lo, hi);
-                        if (trk && (int)(trk->suppressUntil - GetTickCount()) > 0)
-                            mover = NULL;           // pin disproven by a packet: raw
                     }
                 }
             }
@@ -1765,47 +1628,16 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                         }
                     }
 
-                    // Release decision, authoritative version. Clip a remote
-                    // UNLESS the server itself put the unit deep inside a body
-                    // (bot / no-DLL - the truth is inside, arguing with it
-                    // produces the pin/snap port). A wall-pressing player's own
-                    // client holds them OUTSIDE, so their authoritative position
-                    // is never deep-inside and we pin them forever - solid. The
-                    // inside positions WE compute by dead-reckoning them between
-                    // packets are exactly what must be clipped, never released.
-                    bool doClip = true;
-                    if (!isLocal && trk && AuthorityInsideBody(trk, me)) {
-                        DWORD now = GetTickCount();
-                        trk->suppressUntil = now + kRemoteSuppressMs;
-                        doClip = false;
-                        if (g_debug) {
-                            static DWORD s_ov = 0;
-                            if (now - s_ov >= 250) {
-                                s_ov = now;
-                                Log("remote release: guid %08X authority INSIDE (a=%.2f,%.2f) -> raw",
-                                    remLo, trk->ax, trk->ay);
-                            }
-                        }
-                    }
-                    if (doClip)
-                        ClipDelta(me, px, py, pz, isLocal, &dx, &dy);
+                    // Plain swept clip - identical treatment for local and
+                    // remote, exactly like the client's own remote-vs-world
+                    // clip. Depenetration and the +0x4C base fixup are already
+                    // gated to the local player inside ClipDelta / below.
+                    ClipDelta(me, px, py, pz, isLocal, &dx, &dy);
                     localMover = isLocal;
                     clipped = (dx != odx) || (dy != ody);
                     shortx = odx - dx;               // what we removed
                     shorty = ody - dy;
-
-                    // Remember where our clip left every pinned remote, so the
-                    // next call can run the packet-overrule check above.
-                    if (clipped && !isLocal) {
-                        DWORD now = GetTickCount();
-                        if (!trk)
-                            trk = TrackAlloc(remLo, remHi, now);
-                        if (trk) {
-                            trk->ex = px + dx;
-                            trk->ey = py + dy;
-                            trk->lastSeen = now ? now : 1;
-                        }
-                    }
+                    (void)remLo; (void)remHi;
                     if (g_debug) {
                         static DWORD s_l = 0;
                         DWORD n = GetTickCount();
@@ -2114,29 +1946,7 @@ static void __cdecl RemoteRawCommitFilter(void* mv, float* newPos)
     float py = *(float*)((BYTE*)mv + kOff_CMovementPos + 4);
     float pz = *(float*)((BYTE*)mv + kOff_CMovementPos + 8);
 
-    // Debug=2 forensics: every raw-arm commit for a player mover, unthrottled.
-    if (g_debug >= 2)
-        Log("raw %08X t=%lu p=(%.2f,%.2f) new=(%.2f,%.2f) fl=%08X",
-            lo, GetTickCount(), px, py, newPos[0], newPos[1],
-            spline ? *(DWORD*)(spline + 0x20) : 0);
-
-    // Shared pin history with ClipWrapper - same table, same v4 semantics, so
-    // a unit that acquires or finishes a spline mid-contact hands off between
-    // the two arms without losing its state.
-    RemoteTrack* trk = TrackFind(lo, hi);
-    DWORD now = GetTickCount();
-    if (trk && (int)(trk->suppressUntil - now) > 0)
-        return;                                      // in a release window: raw
-    if (trk && AuthorityInsideBody(trk, mover)) {    // server truth is inside: raw
-        trk->suppressUntil = now + kRemoteSuppressMs;
-        if (g_debug)
-            Log("remote release (raw arm): guid %08X authority INSIDE (a=%.2f,%.2f)",
-                lo, trk->ax, trk->ay);
-        return;
-    }
-
-    // The clamp. Same delta convention as the clip arm uses: re-anchored to
-    // the CURRENT position (+0x10), not the integration base.
+    // Plain swept clip, identical to the clip arm - no tracking, no release.
     float dx = newPos[0] - px, dy = newPos[1] - py;
     float odx = dx, ody = dy;
     ClipDelta(mover, px, py, pz, /*isLocal=*/false, &dx, &dy);
@@ -2144,21 +1954,15 @@ static void __cdecl RemoteRawCommitFilter(void* mv, float* newPos)
         newPos[0] = px + dx;
         newPos[1] = py + dy;
         ++g_cRawClamped;
-        if (!trk)
-            trk = TrackAlloc(lo, hi, now);
-        if (g_debug) {
+        if (g_debug >= 2) {
             static DWORD s_l = 0;
+            DWORD now = GetTickCount();
             if (now - s_l >= 250) {
                 s_l = now;
                 Log("rawclamp: guid %08X d=(%.3f,%.3f)->(%.3f,%.3f) raw=%u clamped=%u",
                     lo, odx, ody, dx, dy, g_cRaw, g_cRawClamped);
             }
         }
-    }
-    if (trk) {
-        trk->ex = newPos[0];
-        trk->ey = newPos[1];
-        trk->lastSeen = now ? now : 1;
     }
 }
 
@@ -2370,10 +2174,11 @@ void PlayerCollide_Install()
             return;
         }
 
-        // Second arm of the same integrator: the raw-commit path that bypasses
-        // the clip once a remote's finished spline lingers (see kRawSite).
-        // Optional - a mismatch means finished-spline remotes render raw
-        // exactly as they did before this hook existed, never fatal.
+        // Second arm of the same integrator: the raw-commit path a remote takes
+        // once its finished spline lingers (see kRawSite). Same plain clip as
+        // the clip arm, so a remote is clipped identically whether or not it
+        // carries a spline. Optional - a mismatch means finished-spline remotes
+        // render raw exactly as they did before this hook existed, never fatal.
         if (g_clipRemotes) {
             void* dummy = NULL;
             if (VerifySig(kRawCtx, kRawCtxSig, sizeof(kRawCtxSig),
@@ -2384,20 +2189,6 @@ void PlayerCollide_Install()
                 Log("remote ghost clamp ARMED (raw-commit arm of the integrator)");
             else
                 Log("remote ghost clamp OFF - finished-spline remotes render raw as before");
-
-            // Movement-packet hook: records each remote's authoritative
-            // position so the clip can release only on server truth, never on
-            // our own between-packet dead-reckoning. Read-only; a mismatch just
-            // means the release falls back to never-releasing (pin always),
-            // which is correct for players and only over-pins bots.
-            void* dummy2 = NULL;
-            if (VerifySig(kPktSite, kPktSig, sizeof(kPktSig), "movement packet apply") &&
-                InstallDetour(kPktSite, kPktSig, sizeof(kPktSig), kPktResume,
-                              PacketPosStub, &g_trampPkt, &dummy2,
-                              "movement packet apply"))
-                Log("authoritative-position capture ARMED (packet hook)");
-            else
-                Log("authoritative-position capture OFF - releases fall back to pin-always");
         }
     } else {
         // Legacy mode: correct the position after the mover has produced an
