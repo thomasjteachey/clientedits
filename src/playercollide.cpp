@@ -1052,7 +1052,16 @@ static int g_syncPredicted = 1;       // compensate [CMovement+0x4C] drift
 // Creature movers are never clipped: no server stream stops an NPC or pet at a
 // player body, so pinning one here only makes it stutter against everyone
 // carrying the global aura.
-static int   g_clipRemotes = 1;
+// DEFAULT OFF. Ten rounds of two-client instrumentation established that
+// re-rendering a remote's collision on YOUR screen fights the netcode and
+// cannot be made artefact-free: a remote's position is authoritative,
+// reconstructed by dead-reckoning between heartbeats, so every frame our clip
+// wins the server re-asserts a frame later - the "port through and back". It is
+// purely COSMETIC: mutual collision already works with this off, because each
+// client clips its OWN local player (you cannot walk through them; they cannot
+// walk through you). This only tried to draw the other side's stop locally, and
+// that redraw is the sole source of the porting. On for experiments only.
+static int   g_clipRemotes = 0;
 static const DWORD kRemoteSuppressMs = 2000;  // how long a disproven pin stays released
 
 // How deep inside the body a packet must land to count as a REAL pass-through.
