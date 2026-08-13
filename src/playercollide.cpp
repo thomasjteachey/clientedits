@@ -1285,13 +1285,16 @@ static void ClipDelta(void* unitSelf, float px, float py, float pz,
                 if (into < 0.0f) {
                     remx -= nx * into;               // cancel motion into the body
                     remy -= ny * into;
-                    // Friction is a local FEEL feature. A remote's motion is the
-                    // catch-up toward where the network says it is - damping that
-                    // only makes our copy lag its true position and desyncs.
-                    if (isLocal) {
-                        remx *= g_slideFriction;     // damp the tangential remainder
-                        remy *= g_slideFriction;
-                    }
+                    // Friction applies to REMOTES too - not for feel, for
+                    // FIDELITY. Their own client damps their slide by exactly
+                    // this factor, so their packets trace the damped arc; an
+                    // undamped render runs ahead of the packets along the rim,
+                    // reads as a packet overrule, and drops the unit to raw -
+                    // which is the in/out ghost cycling on grazing contact.
+                    // (Gating this to isLocal was tried in v1.00009: that was
+                    // the observed result.)
+                    remx *= g_slideFriction;         // damp the tangential remainder
+                    remy *= g_slideFriction;
                 }
             }
         }
@@ -1330,11 +1333,11 @@ static void ClipDelta(void* unitSelf, float px, float py, float pz,
             // cylinder it preserves almost all of your speed on a glancing hit and
             // slings you around them. Damping the tangential part is what makes
             // contact read as bumping into a person rather than a greased pole.
-            // Local only: for a remote it just lags them behind their true path.
-            if (isLocal) {
-                remx *= g_slideFriction;
-                remy *= g_slideFriction;
-            }
+            // Applied to remotes too: their own client damps THEM by this factor,
+            // so damping our render is what keeps it tracking their packets (see
+            // the fidelity note in the contact block above).
+            remx *= g_slideFriction;
+            remy *= g_slideFriction;
         }
     }
     float outx = totx + remx, outy = toty + remy;
