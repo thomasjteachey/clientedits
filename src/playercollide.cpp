@@ -1057,6 +1057,16 @@ static int   g_clipRemotes = 1;
 static const float kRemoteSnapYd    = 0.6f;   // observed jump that counts as a packet overrule
 static const DWORD kRemoteSuppressMs = 2000;  // how long a disproven pin stays released
 
+// How deep inside the body a packet must land to count as a REAL pass-through.
+// Measured (2026-08-13, two-client orbit test): a legal graze rides at
+// face-depth -0.03..-0.19 - their client's depenetration deadband alone allows
+// 0.12, and near an octagon corner a point at Euclidean ~1.97 measures ~0.19
+// deep in face metric. An earlier threshold of 0.15 sat INSIDE that band, so
+// legitimate orbit packets flickered between verdicts and every false INSIDE
+// bought 2s of raw ghost - the in/out artefact. A genuine transit passes
+// through depth ~2.0, so 0.6 splits the populations with a wide margin.
+static const float kInsideDepthYd   = 0.6f;
+
 // Stand-on-players. OFF by default and INSTALL-gated: with it off the ground
 // hook is never applied, so the DLL behaves exactly as it did before the feature
 // existed. Nothing about normal collision changes either way.
@@ -1690,7 +1700,7 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                                     float nx, ny;
                                     float sd = OctagonDist(px, py, hx, hy,
                                                            2.0f * g_radius, &nx, &ny);
-                                    inside = (sd < -0.15f);   // clearly overlapping
+                                    inside = (sd < -kInsideDepthYd);
                                 }
                                 if (inside) {
                                     trk->suppressUntil = now + kRemoteSuppressMs;
