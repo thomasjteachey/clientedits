@@ -1020,29 +1020,40 @@ static int g_sides = 0;               // 0 = circle
 static int g_syncPredicted = 1;       // compensate [CMovement+0x4C] drift
 
 // Remote-unit clipping. ClipRemotes = 0 is the hands-off switch: remote units
-// are never touched and render exactly the authoritative stream (they can
-// dead-reckon through bodies again, but they can never port).
+// are never touched and render exactly the raw network stream.
 //
-// With it on, remote PLAYERS are clipped on a SOFT TETHER. What we shorten for
-// a remote is not free extrapolation - it is the catch-up toward its
-// network-driven base at [CMovement+0x4C], and the server does not honour our
-// constraint, so any distance refused is divergence from where the unit really
-// is and MUST discharge eventually. Refusing without bound is what produced the
-// multi-yard rim ports (v1.00007); by symmetry, standing aside too eagerly
-// renders no collision at all (the v1.00008 ledger, whose accrual re-counted
-// the same standing gap every frame - the delta IS the outstanding gap, not an
-// increment). The tether uses that same fact exactly: hold a remote at most
-// RemoteTether yards behind its authority, yield precisely the excess. A unit
-// whose stream really stops (a DLL'd player at a wall) never reaches the cap
-// and pins SOLID; a unit the server walks through (playerbot, deleted DLL)
-// presses in, hesitates, and squeezes through trailing the cap behind - a
-// packet rebase can never snap it further than the cap. Stateless, exact.
+// With it on, remote PLAYERS are PINNED at blockers, released per unit only on
+// PROOF the server disagrees. Three designs taught us why this is the shape:
+//
+//  v1.00007 pinned unconditionally. Solid walls - and units whose packets do
+//  not stop (playerbots, rim-grazers whose own client let them pass) snapped
+//  a heartbeat's worth of distance forward on every packet: the "porting
+//  around" reports.
+//  v1.00008/9 bounded the refused amount (ledger, then tether). Both bounded
+//  against the WRONG signal: the delta this hook refuses is divergence from
+//  the dead-reckoned GHOST (base + movement-flag extrapolation), not from the
+//  server. A player pressing W against a wall generates unbounded ghost
+//  motion while their packets sit still at the wall - refusing it forever is
+//  CORRECT. Any cap eventually yields to the ghost and drags the unit through
+//  the body until the next heartbeat snaps it back: the "running through me,
+//  teleporting back, over and over" report, i.e. the exact artefact remote
+//  clipping exists to remove.
+//
+// The only signal that distinguishes the two cases is the packet stream
+// itself, so that is what v3 uses. While pinning a unit we know exactly where
+// we put it; if its position then JUMPS (> kRemoteSnapYd) between calls, a
+// packet overruled our pin - the authority really is walking it through - so
+// that unit is released for kRemoteSuppressMs and renders raw. Wall-pressed
+// players never trigger it (their packets agree with the pin): solid,
+// permanent collision. Bots and pass-throughs trigger it on the first
+// heartbeat and move smoothly instead of pin/snap cycling.
 //
 // Creature movers are never clipped: no server stream stops an NPC or pet at a
 // player body, so pinning one here only makes it stutter against everyone
 // carrying the global aura.
-static int   g_clipRemotes  = 1;
-static float g_remoteTether = 0.8f;   // max yards a remote is held behind its authority
+static int   g_clipRemotes = 1;
+static const float kRemoteSnapYd    = 0.6f;   // observed jump that counts as a packet overrule
+static const DWORD kRemoteSuppressMs = 2000;  // how long a disproven pin stays released
 
 // Stand-on-players. OFF by default and INSTALL-gated: with it off the ground
 // hook is never applied, so the DLL behaves exactly as it did before the feature
@@ -1503,6 +1514,46 @@ static void ZProbe(void* self, float px, float py, float pz)
         Log("ZProbe: myZ=%.3f near=%d%s", pz, c.n, c.buf);
 }
 
+// Per-unit pin tracking: where we left each clipped remote, so the next call
+// can tell "still where we put it" (packets agree with the pin) from "jumped"
+// (a packet overruled it). Only units actually being clipped occupy a slot.
+struct RemoteTrack {
+    DWORD lo, hi;          // unit guid
+    float ex, ey;          // where our clip left them - expected next call
+    DWORD lastSeen;        // tick of the last clip we applied (0 = free slot)
+    DWORD suppressUntil;   // while (int)(suppressUntil - now) > 0: hands off
+};
+static RemoteTrack g_track[16];
+
+static RemoteTrack* TrackFind(DWORD lo, DWORD hi)
+{
+    for (int i = 0; i < 16; ++i)
+        if (g_track[i].lastSeen && g_track[i].lo == lo && g_track[i].hi == hi)
+            return &g_track[i];
+    return NULL;
+}
+
+static RemoteTrack* TrackAlloc(DWORD lo, DWORD hi, DWORD now)
+{
+    RemoteTrack* best = &g_track[0];
+    DWORD bestAge = now - g_track[0].lastSeen;       // wrap-safe age
+    if (!g_track[0].lastSeen) bestAge = 0xFFFFFFFF;
+    for (int i = 1; i < 16; ++i) {
+        if (!g_track[i].lastSeen) { best = &g_track[i]; bestAge = 0xFFFFFFFF; break; }
+        DWORD age = now - g_track[i].lastSeen;
+        if (age > bestAge) { bestAge = age; best = &g_track[i]; }
+    }
+    // Never steal a slot from a unit still in contact (age under 3s): evicting
+    // a live pin would zero its history and un-release a disproven one. With
+    // the table full of live pins, the new unit simply goes untracked - it
+    // still gets pinned, it just cannot be auto-released until a slot frees.
+    if (bestAge < 3000)
+        return NULL;
+    best->lo = lo; best->hi = hi;
+    best->suppressUntil = now;
+    return best;
+}
+
 static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                                   float dx, float dy, float dz)
 {
@@ -1516,13 +1567,14 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
         unsigned __int64 guid = pGetActiveGuid();
         if (guid) {
             void* meLocal = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnitOrPlayer);
+            DWORD remLo = 0, remHi = 0;
+            RemoteTrack* trk = NULL;
 
             // Which unit owns this CMovement? Ours, or a REMOTE unit's.
             //
-            // Remote PLAYERS are clipped on the soft tether (see the comment at
-            // g_clipRemotes): solid against movers whose own client stopped
-            // them, a bounded squeeze-through for movers the server walks
-            // through. Creature movers are the server's alone - hands off.
+            // Remote PLAYERS are pinned at blockers, auto-released per unit on
+            // proof the server disagrees (see the comment at g_clipRemotes).
+            // Creature movers are the server's alone - hands off.
             void* mover = (BYTE*)self - kOff_Movement;
             if (mover != meLocal) {
                 // Not us - prove it really is a live unit before touching it,
@@ -1538,6 +1590,12 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                         mover = NULL;               // creature/pet mover: server-owned
                     else if (!g_clipRemotes)
                         mover = NULL;               // hands-off switch
+                    else {
+                        remLo = lo; remHi = hi;
+                        trk = TrackFind(lo, hi);
+                        if (trk && (int)(trk->suppressUntil - GetTickCount()) > 0)
+                            mover = NULL;           // pin disproven by a packet: raw
+                    }
                 }
             }
 
@@ -1594,26 +1652,45 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
                         }
                     }
 
-                    ClipDelta(me, px, py, pz, isLocal, &dx, &dy);
+                    // Packet-overrule check. While we pin a unit, its position
+                    // next call must be exactly where our clip left it - the
+                    // only other writer is the packet path, which rebases
+                    // position directly. A jump means the authority moved them
+                    // off our pin (their client let them pass, or they have no
+                    // client at all): stop arguing and render that unit raw
+                    // for a while, instead of pin/snap cycling every heartbeat.
+                    bool doClip = true;
+                    if (!isLocal && trk) {
+                        DWORD now = GetTickCount();
+                        if ((DWORD)(now - trk->lastSeen) < 250) {
+                            float jx = px - trk->ex, jy = py - trk->ey;
+                            if (jx * jx + jy * jy > kRemoteSnapYd * kRemoteSnapYd) {
+                                trk->suppressUntil = now + kRemoteSuppressMs;
+                                doClip = false;
+                                if (g_debug)
+                                    Log("remote pin overruled: guid %08X jumped %.2f -> raw for %lums",
+                                        remLo, sqrtf(jx * jx + jy * jy),
+                                        (unsigned long)kRemoteSuppressMs);
+                            }
+                        }
+                    }
+                    if (doClip)
+                        ClipDelta(me, px, py, pz, isLocal, &dx, &dy);
                     localMover = isLocal;
                     clipped = (dx != odx) || (dy != ody);
                     shortx = odx - dx;               // what we removed
                     shorty = ody - dy;
 
-                    // Soft tether. The delta handed to this hook is the WHOLE
-                    // outstanding gap (target - position), so what we just
-                    // refused IS the unit's total divergence, measured fresh
-                    // this frame - no accumulation, no per-unit state. Yield
-                    // everything beyond the cap: the unit is held at most
-                    // g_remoteTether behind its authority, which also bounds
-                    // what any packet rebase can snap. Blinks and charges pass
-                    // through naturally (refused >> cap -> nearly all yielded).
+                    // Remember where our clip left every pinned remote, so the
+                    // next call can run the packet-overrule check above.
                     if (clipped && !isLocal) {
-                        float r = sqrtf(shortx * shortx + shorty * shorty);
-                        if (r > g_remoteTether) {
-                            float give = (r - g_remoteTether) / r;
-                            dx += shortx * give;
-                            dy += shorty * give;
+                        DWORD now = GetTickCount();
+                        if (!trk)
+                            trk = TrackAlloc(remLo, remHi, now);
+                        if (trk) {
+                            trk->ex = px + dx;
+                            trk->ey = py + dy;
+                            trk->lastSeen = now ? now : 1;
                         }
                     }
                     if (g_debug) {
@@ -1934,10 +2011,6 @@ void PlayerCollide_LoadSettings(const char* dir)
     g_syncPredicted = GetPrivateProfileIntA("PlayerCollide", "SyncPredicted", 1, ini);
     g_clipRemotes   = GetPrivateProfileIntA("PlayerCollide", "ClipRemotes", 1, ini);
     g_npcBlockers   = GetPrivateProfileIntA("PlayerCollide", "NpcBlockers", 1, ini);
-    GetPrivateProfileStringA("PlayerCollide", "RemoteTether", "0.8", buf, sizeof(buf), ini);
-    g_remoteTether  = (float)atof(buf);
-    if (g_remoteTether < 0.1f) g_remoteTether = 0.1f;
-    if (g_remoteTether > 5.0f) g_remoteTether = 5.0f;
     g_standOnPlayers = GetPrivateProfileIntA("PlayerCollide", "StandOnPlayers", 0, ini);
     GetPrivateProfileStringA("PlayerCollide", "StandHeight", "1.2", buf, sizeof(buf), ini);
     g_standHeight = (float)atof(buf);
