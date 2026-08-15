@@ -42,6 +42,7 @@
 
 #include "trace.h"
 #include "playercollide.h"
+#include "goeditor.h"
 
 #define DEFAULT_LOCK_ANIMS   "119,223"     // StealthWalk, StealthRun
 #define DEFAULT_ATTACK_ANIMS "16,17,18,19,46,49,85,86,87,88,107,117,482"
@@ -478,6 +479,11 @@ static void Install(HMODULE self)
     // [PlayerCollide] section and installs its own detour (OFF unless configured).
     PlayerCollide_LoadSettings(g_dir);
     PlayerCollide_Install();
+
+    // GameObject editor / cursor-pick probe: its own [GOEditorProbe] section, own
+    // detour, OFF unless Enabled=1. Read-only and independent of everything above.
+    GOEditor_LoadSettings(g_dir);
+    GOEditor_Install();
 }
 
 // -------------------------------------------------------- dinput8.dll proxy
@@ -524,6 +530,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Install(hModule);
     } else if (reason == DLL_PROCESS_DETACH) {
         StopTrace();
+        GOEditor_Shutdown();
     }
     return TRUE;
 }

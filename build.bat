@@ -41,14 +41,14 @@ if not exist out\proxy mkdir out\proxy
 echo === AnimSpeedFix.dll (x86) ===
 cl /nologo /LD /O2 /MT /W3 /GS- /EHsc ^
    /Fo:out\ /Fe:out\AnimSpeedFix.dll ^
-   src\AnimSpeedFix.cpp src\playercollide.cpp ^
+   src\AnimSpeedFix.cpp src\playercollide.cpp src\goeditor.cpp ^
    /link /SUBSYSTEM:WINDOWS /DYNAMICBASE:NO kernel32.lib user32.lib
 if errorlevel 1 goto :fail
 
 echo === dinput8.dll proxy (x86) - drop-in, no injector ===
 cl /nologo /LD /O2 /MT /W3 /GS- /EHsc /DBUILD_DINPUT8_PROXY ^
    /Fo:out\proxy\ /Fe:out\dinput8.dll ^
-   src\AnimSpeedFix.cpp src\playercollide.cpp ^
+   src\AnimSpeedFix.cpp src\playercollide.cpp src\goeditor.cpp ^
    /link /SUBSYSTEM:WINDOWS /DYNAMICBASE:NO /DEF:src\dinput8.def kernel32.lib user32.lib
 if errorlevel 1 goto :fail
 

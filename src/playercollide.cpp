@@ -909,6 +909,74 @@ static int g_spellCollideAll     = 90213;   // Solid Form
 // GIVEN a collision aura blocks regardless of this switch.
 static int g_npcBlockers = 1;
 
+// ---- collision exclusions (configurable) --------------------------------
+// A unit matching any of these never collides, in EITHER direction. Default ON.
+static int g_excludeAuras[8]   = { 8326, 0, 0, 0, 0, 0, 0, 0 }; // ghost aura default
+static int g_excludeAuraCount  = 1;
+static int g_excludeDead       = 1;         // dead units (health == 0) do not collide
+static int g_excludePets       = 1;         // a player and its own pet do not collide
+
+// The unit's UpdateFields values array lives at [unit+0x8] (verified: the client
+// reads its GUID as [[unit+8]+0]). Field indices are the stock 3.3.5a (12340)
+// enum, so byte offset = index * 4.
+static const DWORD kDesc_Ptr       = 0x08;
+static const DWORD kFld_SummonedBy = 0x0E * 4;   // UNIT_FIELD_SUMMONEDBY (2 dwords)
+static const DWORD kFld_CreatedBy  = 0x10 * 4;   // UNIT_FIELD_CREATEDBY  (2 dwords)
+static const DWORD kFld_Health     = 0x18 * 4;   // UNIT_FIELD_HEALTH
+
+static bool ReadDescU32(void* unit, DWORD fieldByteOffset, DWORD* out)
+{
+    if (!Readable((BYTE*)unit + kDesc_Ptr, 4))
+        return false;
+    BYTE* desc = *(BYTE**)((BYTE*)unit + kDesc_Ptr);
+    if (!desc || !Readable(desc + fieldByteOffset, 4))
+        return false;
+    *out = *(DWORD*)(desc + fieldByteOffset);
+    return true;
+}
+
+static bool UnitIsDead(void* unit)
+{
+    DWORD hp;
+    if (!ReadDescU32(unit, kFld_Health, &hp))
+        return false;                        // unreadable -> treat as alive
+    return hp == 0;
+}
+
+static bool IsOwnedBy(void* pet, DWORD ownerLo, DWORD ownerHi)
+{
+    DWORD lo, hi;
+    if (ReadDescU32(pet, kFld_SummonedBy, &lo) && ReadDescU32(pet, kFld_SummonedBy + 4, &hi) &&
+        (lo || hi) && lo == ownerLo && hi == ownerHi)
+        return true;
+    if (ReadDescU32(pet, kFld_CreatedBy, &lo) && ReadDescU32(pet, kFld_CreatedBy + 4, &hi) &&
+        (lo || hi) && lo == ownerLo && hi == ownerHi)
+        return true;
+    return false;
+}
+
+// A player and its own pet (in either role).
+static bool IsPetPair(void* me, void* other)
+{
+    if (!Readable((BYTE*)me + kOff_GuidLow, 8) || !Readable((BYTE*)other + kOff_GuidLow, 8))
+        return false;
+    DWORD meLo = *(DWORD*)((BYTE*)me + kOff_GuidLow),    meHi = *(DWORD*)((BYTE*)me + kOff_GuidHigh);
+    DWORD otLo = *(DWORD*)((BYTE*)other + kOff_GuidLow), otHi = *(DWORD*)((BYTE*)other + kOff_GuidHigh);
+    return IsOwnedBy(other, meLo, meHi) || IsOwnedBy(me, otLo, otHi);
+}
+
+// Per-unit exclusions: a dead unit, or one carrying an excluded aura, never
+// collides. Checked for BOTH parties in BlocksMe.
+static bool CollisionExcluded(void* unit)
+{
+    if (g_excludeDead && UnitIsDead(unit))
+        return true;
+    for (int i = 0; i < g_excludeAuraCount; ++i)
+        if (g_excludeAuras[i] && UnitHasAura(unit, g_excludeAuras[i]))
+            return true;
+    return false;
+}
+
 static bool IsHostileTo(void* me, void* other)
 {
     if (!pGetReaction || !me || !other)
@@ -933,6 +1001,27 @@ static bool BlocksMe(void* me, void* other)
 {
     if (!me || !other)
         return false;
+
+    // Exclusions veto collision before any positive rule. Either party being
+    // excluded (dead / excluded aura) cancels it; so does the two being a
+    // player-and-its-own-pet pair.
+    bool const exMe = CollisionExcluded(me), exOther = CollisionExcluded(other);
+    bool const exPet = g_excludePets && IsPetPair(me, other);
+    if (exMe || exOther || exPet) {
+        if (g_debug) {
+            static DWORD s_l = 0;
+            DWORD n = GetTickCount();
+            if (n - s_l >= 500) {
+                s_l = n;
+                DWORD hpMe = 0, hpOt = 0;
+                ReadDescU32(me, kFld_Health, &hpMe);
+                ReadDescU32(other, kFld_Health, &hpOt);
+                Log("exclude: me{hp=%u ex=%d} other{hp=%u ex=%d} pet=%d",
+                    hpMe, exMe ? 1 : 0, hpOt, exOther ? 1 : 0, exPet ? 1 : 0);
+            }
+        }
+        return false;
+    }
 
     // Cheapest first: the unconditional ones need no reaction lookup.
     if (g_spellBlockAll && UnitHasAura(other, g_spellBlockAll))
@@ -1697,10 +1786,13 @@ static int __fastcall ClipWrapper(void* self, void* /*edx*/, void* a1, void* a2,
     // This instead subtracts exactly what we refused to move, which needs no
     // knowledge of when the position is committed. OFF by default: it changes
     // client state, so it stays opt-in until measured.
-    // Local player only: [CMovement+0x4C] is the base our own input advances
-    // from. For a remote unit that base is driven by network updates, so editing
-    // it corrupts their interpolation instead of correcting it.
-    if (clipped && localMover && g_syncPredicted) {
+    // Applies to ALL movers, INCLUDING remotes. [CMovement+0x4C] is the base the refused
+    // movement accumulates against; holding a remote back WITHOUT editing its +0x4C base
+    // lets the shortfall discharge as a teleport once the obstruction clears - that is the
+    // remote-porting regression. This is the remote equivalent of the local SyncPredicted
+    // correction. Gating it to `localMover &&` (73800b8) on the belief it "corrupts remote
+    // interpolation" was WRONG and was the regression. DO NOT re-add a localMover gate.
+    if (clipped && g_syncPredicted) {
         float* pred = (float*)((BYTE*)self + kOff_Predicted);
         pred[0] -= (shortx);
         pred[1] -= (shorty);
@@ -2025,6 +2117,136 @@ static bool InstallDetour(DWORD site, const BYTE* sig, size_t siglen, DWORD resu
     return true;
 }
 
+// ==================== client-tweaks attestation (anti-cheat) ================
+//
+// Proves to the server that this DLL is present and collision is enabled, so a
+// player who deletes the DLL (or sets Enabled=0) to walk through everyone gets
+// kicked. Every ATTEST_INTERVAL_MS, while in world, we send an addon message on
+// the BATTLEGROUND channel:   CCGACK\t<16 hex>
+// where <hex> = FNV-1a64(secret + guidLow LE + guidHigh LE). The server
+// (game/Server/ClientTweaksAttest.cpp) recomputes and validates it, and kicks
+// anyone who does not attest. Server-gated: with ClientTweaks.Attest.Enable off
+// nobody is kicked, so sending is harmless.
+//
+// The SECRET below MUST match worldserver.conf ClientTweaks.Attest.Secret byte
+// for byte. Rotating it means rebuilding BOTH sides.
+//
+// Send primitive: the client has no single (type,lang,body) sender, so we
+// replicate the inline CMSG_MESSAGECHAT builder SendChatMessage runs for
+// addon/BG messages (the queue path 0x502FA0 is whisper-only + throttled - do
+// NOT use it). ctor -> PutInt32 x3 -> PutString -> reset read-cursor -> Send.
+// The +0x14 read-cursor reset is mandatory or the packet is one byte too long.
+static const char* const kAttestSecret = "Centurion.CT.v1.a3f9c2e1";
+static const DWORD ATTEST_INTERVAL_MS = 15000;
+static int   g_attest = 1;                // AntiCheat ini key; 1 = send tokens
+static int   g_enabledConfig = 1;         // ini Enabled, captured BEFORE install can
+                                          // zero g_enabled on a hook failure - so a
+                                          // build/patch mismatch does not self-kick,
+                                          // but a deliberate Enabled=0 still fails.
+static DWORD g_attestLast = 0;
+
+typedef void* (__thiscall* CdsCtor_t)(void*);
+typedef void* (__thiscall* CdsPutU32_t)(void*, DWORD);
+typedef void* (__thiscall* CdsPutStr_t)(void*, const char*);
+typedef void  (__cdecl*    NetSend_t)(void*);
+typedef void  (__thiscall* CdsDtor_t)(void*);
+static const CdsCtor_t   pCdsCtor   = (CdsCtor_t)  0x00401050;
+static const CdsPutU32_t pCdsPutU32 = (CdsPutU32_t)0x0047B0A0;
+static const CdsPutStr_t pCdsPutStr = (CdsPutStr_t)0x0047B300;
+static const NetSend_t   pNetSend   = (NetSend_t)  0x006B0B50;
+static const CdsDtor_t   pCdsDtor   = (CdsDtor_t)  0x00403880;
+#define kNetClientPtr (*(void**)0x00C79CF4)
+
+static void SendAddonBG(const char* body)
+{
+    if (!kNetClientPtr || !body)                 // Send aborts on a NULL singleton
+        return;
+    DWORD cds[8] = { 0 };                         // struct is 0x18; roomy + aligned
+    pCdsCtor(cds);                                // sets +0x14 = 0xFFFFFFFF
+    pCdsPutU32(cds, 0x95);                        // CMSG_MESSAGECHAT
+    pCdsPutU32(cds, 0x2C);                        // CHAT_MSG_BATTLEGROUND
+    pCdsPutU32(cds, 0xFFFFFFFF);                  // LANG_ADDON
+    pCdsPutStr(cds, body);                        // verbatim, including the '\t'
+    cds[5] = 0;                                   // +0x14 read cursor = 0 (REQUIRED)
+    pNetSend(cds);
+    pCdsDtor(cds);
+}
+
+// Writes "CCGACK\t" + 16 lowercase hex into out (needs >= 24 bytes). Byte-identical
+// to the server's ExpectedToken - do not change one side without the other.
+static void AttestToken(DWORD lo, DWORD hi, char* out)
+{
+    unsigned __int64 h = 0xcbf29ce484222325ULL;
+    for (const char* s = kAttestSecret; *s; ++s) {
+        h ^= (unsigned char)*s;
+        h *= 0x100000001b3ULL;
+    }
+    unsigned char le[8] = {
+        (unsigned char)lo, (unsigned char)(lo >> 8), (unsigned char)(lo >> 16), (unsigned char)(lo >> 24),
+        (unsigned char)hi, (unsigned char)(hi >> 8), (unsigned char)(hi >> 16), (unsigned char)(hi >> 24) };
+    for (int i = 0; i < 8; ++i) {
+        h ^= le[i];
+        h *= 0x100000001b3ULL;
+    }
+    static const char* const HEX = "0123456789abcdef";
+    memcpy(out, "CCGACK\t", 7);
+    for (int i = 0; i < 16; ++i)
+        out[7 + (15 - i)] = HEX[(h >> (i * 4)) & 0xF];
+    out[23] = '\0';
+}
+
+static unsigned __int64 g_attestGuid = 0;   // guid we last attested for
+
+static void __cdecl AttestTick()
+{
+    // Gate on the CONFIGURED enable, not the runtime g_enabled (which a failed
+    // hook zeroes): a genuine Enabled=0 cheat still fails, a build mismatch does
+    // not falsely self-kick. All integer math - no FPU on this hooked path.
+    if (!g_attest || !g_enabledConfig)
+        return;
+    if (!kNetClientPtr)
+        return;
+    unsigned __int64 guid = pGetActiveGuid ? pGetActiveGuid() : 0;
+    if (!guid)
+        return;                                   // not in world yet
+
+    // Fire IMMEDIATELY the first time we see a new in-world guid - a fresh login
+    // OR a character switch without restarting the client (which would otherwise
+    // leave the 15s throttle armed and delay the first token up to a full
+    // interval). This guarantees a legit client attests within a second or two
+    // of entering the world, so a short login grace never false-kicks it.
+    DWORD now = GetTickCount();
+    bool const enteredWorld = (guid != g_attestGuid);
+    if (!enteredWorld && (now - g_attestLast < ATTEST_INTERVAL_MS))
+        return;
+
+    g_attestGuid = guid;
+    g_attestLast = now;
+    char body[24];
+    AttestToken((DWORD)guid, (DWORD)(guid >> 32), body);
+    SendAddonBG(body);
+    if (g_debug)
+        Log("attest: sent %s%s", body, enteredWorld ? " (entered world)" : "");
+}
+
+// Hooked at HandleMessage (0x631FE0): main-thread and called for every incoming
+// packet, so it fires even while the player stands still (movement hooks do
+// not). The throttle inside AttestTick keeps the actual send to once per window.
+static const DWORD kAttestSite   = 0x00631FE0;
+static const BYTE  kAttestSig[]  = { 0x55,0x8B,0xEC,0x83,0x05,0x38,0xD6,0xC5,0x00,0x01 };
+static const DWORD kAttestResume = 0x00631FEA;
+static BYTE* g_trampAttest = NULL;
+
+__declspec(naked) static void AttestStub()
+{
+    __asm {
+        pushad
+        call AttestTick
+        popad
+        jmp dword ptr [g_trampAttest]
+    }
+}
+
 void PlayerCollide_LoadSettings(const char* dir)
 {
     strcpy_s(g_dir, sizeof(g_dir), dir);
@@ -2087,6 +2309,23 @@ void PlayerCollide_LoadSettings(const char* dir)
     g_separateSpeed = (float)atof(buf);
     if (g_separateSpeed < 0.25f) g_separateSpeed = 0.25f;
     if (g_separateSpeed > 20.0f) g_separateSpeed = 20.0f;
+
+    // ---- collision exclusions ----
+    g_excludeDead = GetPrivateProfileIntA("PlayerCollide", "ExcludeDead", 1, ini);
+    g_excludePets = GetPrivateProfileIntA("PlayerCollide", "ExcludePets", 1, ini);
+    GetPrivateProfileStringA("PlayerCollide", "ExcludeAuras", "8326", buf, sizeof(buf), ini);
+    g_excludeAuraCount = 0;
+    for (char* p = buf; *p && g_excludeAuraCount < 8; ) {
+        while (*p == ' ' || *p == ',') ++p;
+        if (!*p) break;
+        int id = (int)atof(p);
+        if (id > 0) g_excludeAuras[g_excludeAuraCount++] = id;
+        while (*p && *p != ',') ++p;
+    }
+
+    // ---- anti-cheat attestation ----
+    g_enabledConfig = g_enabled;      // snapshot before install may zero g_enabled
+    g_attest    = GetPrivateProfileIntA("PlayerCollide", "AntiCheat", 1, ini);
 }
 
 void PlayerCollide_Install()
@@ -2125,6 +2364,21 @@ void PlayerCollide_Install()
     pGetAuraInfo   = (GetAuraInfo_t)kGetAuraInfo;
     pGetSpeed      = (GetSpeed_t)kGetSpeed;
     pGetReaction   = (GetReaction_t)kGetReaction;
+
+    // Anti-cheat attestation heartbeat. Installed here - after the shared
+    // resolvers matched but before the collision hooks - so it is independent of
+    // them: a collision-hook failure does not stop attestation, and attestation
+    // never blocks collision. Server-gated, so this is inert until the server
+    // turns enforcement on.
+    if (g_attest) {
+        void* dummyAtt = NULL;
+        if (VerifySig(kAttestSite, kAttestSig, sizeof(kAttestSig), "message dispatch (attest)") &&
+            InstallDetour(kAttestSite, kAttestSig, sizeof(kAttestSig), kAttestResume,
+                          AttestStub, &g_trampAttest, &dummyAtt, "attestation heartbeat"))
+            Log("client-tweaks attestation ARMED (heartbeat on 0x631FE0)");
+        else
+            Log("client-tweaks attestation OFF (dispatch signature mismatch)");
+    }
 
     if (g_probe) {
         if (VerifySig(kIntersectSite, kIntersectSig, sizeof(kIntersectSig), "CWorld::Intersect") &&
