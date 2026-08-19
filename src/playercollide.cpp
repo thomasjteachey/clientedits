@@ -910,9 +910,14 @@ static int g_spellCollideAll     = 90213;   // Solid Form
 static int g_npcBlockers = 1;
 
 // ---- collision exclusions (configurable) --------------------------------
-// A unit matching any of these never collides, in EITHER direction. Default ON.
-static int g_excludeAuras[8]   = { 8326, 0, 0, 0, 0, 0, 0, 0 }; // ghost aura default
-static int g_excludeAuraCount  = 1;
+// A unit carrying any of these auras never collides, in EITHER direction, and
+// this is checked FIRST so it takes precedence over every collision rule. This
+// is also where "bypass" auras go - e.g. a rogue talent that lets you slip
+// through everyone: give the rogue the aura and list its id here.
+//   8326  = Ghost (running back to your corpse)
+//   90218 = Ghostwalk (rogue collision-bypass talent aura)
+static int g_excludeAuras[8]   = { 8326, 90218, 0, 0, 0, 0, 0, 0 };
+static int g_excludeAuraCount  = 2;
 static int g_excludeDead       = 1;         // dead units (health == 0) do not collide
 static int g_excludePets       = 1;         // a player and its own pet do not collide
 
