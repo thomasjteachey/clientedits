@@ -43,6 +43,8 @@
 #include "trace.h"
 #include "playercollide.h"
 #include "goeditor.h"
+#include "gluebridge.h"
+#include "nametag.h"
 
 #define DEFAULT_LOCK_ANIMS   "119,223"     // StealthWalk, StealthRun
 #define DEFAULT_ATTACK_ANIMS "16,17,18,19,46,49,85,86,87,88,107,117,482"
@@ -484,6 +486,17 @@ static void Install(HMODULE self)
     // detour, OFF unless Enabled=1. Read-only and independent of everything above.
     GOEditor_LoadSettings(g_dir);
     GOEditor_Install();
+
+    // CenturionGlueRequest for the character select/create screens: its own
+    // [GlueBridge] section, ON unless Enabled=0. Independent of everything above.
+    GlueBridge_LoadSettings(g_dir);
+    GlueBridge_Install();
+
+    // World / Tournament / Bot marker over player names: its own [NameTag]
+    // section, OFF unless Enabled=1. Today it only probes the name tag and
+    // writes what it sees to the log.
+    NameTag_LoadSettings(g_dir);
+    NameTag_Install();
 }
 
 // -------------------------------------------------------- dinput8.dll proxy
