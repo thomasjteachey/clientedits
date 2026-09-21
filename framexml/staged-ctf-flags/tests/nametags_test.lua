@@ -14,7 +14,8 @@ end
 function SetCVar(name, value) cvars[name] = value end
 function PlaySound() end
 local categories = {}
-function InterfaceOptions_AddCategory(p) categories[#categories + 1] = p end
+local addOnArg
+function InterfaceOptions_AddCategory(p, addOn) categories[#categories + 1] = p; addOnArg = addOn end
 UIParent = {}
 
 local function newRegion()
@@ -50,8 +51,9 @@ chunk()
 
 local panel = CenturionOptionsPanel
 local box = CenturionNameTagsCheck
-check(#categories == 1 and categories[1] == panel, "panel registered under AddOns")
+check(#categories == 1 and categories[1] == panel, "panel registered")
 check(panel.name == "Centurion", "panel is named Centurion")
+check(addOnArg == nil, "filed under the Game tab")
 
 -- DLL present, marker on
 cvars.centurionNameTags = "1"

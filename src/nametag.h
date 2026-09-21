@@ -29,12 +29,6 @@ void NameTag_LoadSettings(const char* dir);
 // logs and disables.
 void NameTag_Install();
 
-// Register the centurionNameTags CVar if it is not yet. Called from the char
-// select screen's Lua registration (gluebridge.cpp), so the CVar exists before
-// the interface loads and its options checkbox can find it; the first name tag
-// is the fallback. Never from DllMain.
-void NameTag_RegisterCVar();
-
 // Whether the marker should be drawn at all: the CVar, or the ini default
 // before the CVar exists. Read by the draw path once there is one.
 bool NameTag_Enabled();

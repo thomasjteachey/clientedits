@@ -81,6 +81,18 @@ static const BYTE  kCVarRegSig[] = {
 };
 static const DWORD kNameFlags    = 0x00D380A0;
 
+// CVar lookup by name, the one the Lua GetCVar uses: returns the CVar, or null
+// when there is none (or it is not visible to scripts).
+static const DWORD kCVarLookup   = 0x00767460;
+static const BYTE  kCVarLookupSig[] = {
+    0x55,                                   // push ebp
+    0x8B, 0xEC,                             // mov ebp, esp
+    0x8B, 0x45, 0x08,                       // mov eax, [ebp+8]
+    0x85, 0xC0                              // test eax, eax
+};
+typedef void* (__cdecl* CVarLookup_t)(const char* name);
+static int g_lookupOk = 0;
+
 // STAGE 2 - the marker line. Inside 0x007E5640's dirty block:
 //
 //     0x007E5754  call edx              ; [unitVtable+0xCC](mask, buf, 0x400)
@@ -282,6 +294,33 @@ typedef void* (__cdecl* CVarRegister_t)(const char* name, int unknown, int flags
                                         int category, int unk0, int userArg, int unk1);
 
 static int g_cvarRegistered = 0;
+static DWORD g_cvarChecked = 0;
+
+static void RegisterCVar();
+
+// Make sure the CVar exists NOW, not just that it was registered once.
+//
+// It does not survive everything: registered from the character select screen,
+// it was gone by the time the world loaded - its memory had been reused for
+// `synchronizeConfig` - while this file still believed it was there. The marker
+// kept drawing off the remembered value, but /console and the Interface
+// checkbox found nothing (the checkbox greyed itself out on every client). So
+// this runs from the in-world name tag, looks the CVar up by name at most once
+// a second, and registers it again whenever it is missing.
+static void EnsureCVar()
+{
+    DWORD const now = GetTickCount();
+    if (g_cvarRegistered && now - g_cvarChecked < 1000)
+        return;
+    g_cvarChecked = now;
+
+    if (g_cvarRegistered && g_lookupOk && ((CVarLookup_t)kCVarLookup)("centurionNameTags"))
+        return;
+    if (g_cvarRegistered)
+        Log("centurionNameTags went missing - registering it again");
+    g_cvarRegistered = 0;
+    RegisterCVar();
+}
 
 static void RegisterCVar()
 {
@@ -314,13 +353,6 @@ static void RegisterCVar()
     Log("registered centurionNameTags (cvar=%p, default %d)", cvar, g_defaultOn);
 }
 
-void NameTag_RegisterCVar()
-{
-    // Only once the install has written the in-.text callback thunk.
-    if (g_enabled && g_thunkReady)
-        RegisterCVar();
-}
-
 bool NameTag_Enabled()
 {
     if (!g_enabled) return false;
@@ -344,7 +376,7 @@ static int WantedMarker(void* tag, void* unit);
 
 extern "C" void __cdecl NameTagProbe(void* tag)
 {
-    RegisterCVar();
+    EnsureCVar();
 
     if (!Readable(tag, 0x20)) return;
 
@@ -592,6 +624,7 @@ void NameTag_Install()
         return;
     if (!VerifySig(kObjectPtr, kObjectPtrSig, sizeof(kObjectPtrSig), "ObjectPtr"))
         return;
+    g_lookupOk = VerifySig(kCVarLookup, kCVarLookupSig, sizeof(kCVarLookupSig), "CVar lookup");
 
     // Nothing here may call into the game - see NameTagProbe. Only bytes are
     // checked and written; the CVar is registered on the first name tag.

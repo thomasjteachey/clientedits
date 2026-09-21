@@ -3,7 +3,7 @@
 -- The marker itself is drawn by the client tweaks (dinput8.dll, src/nametag.cpp)
 -- from a hidden aura the realm gives every player. The DLL registers one CVar,
 -- centurionNameTags, and remembers its value in AnimSpeedFix.ini, so this panel
--- only has to flip it. It lives under Interface > AddOns > Centurion.
+-- only has to flip it. It lives under Interface > Game > Centurion.
 --
 -- A client without the DLL has no such CVar; the box is then shown greyed out
 -- rather than pretending to do something.
@@ -66,4 +66,7 @@ panel:SetScript("OnShow", function()
 	end
 end);
 
+-- No addon name on purpose: from secure FrameXML that files the page with
+-- Blizzard's own, under the Game tab (InterfaceOptions_AddCategory, `issecure()
+-- and not addOn`). Passing one would move it to the AddOns tab.
 InterfaceOptions_AddCategory(panel);
