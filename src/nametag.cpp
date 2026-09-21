@@ -81,6 +81,21 @@ static const BYTE  kCVarRegSig[] = {
 };
 static const DWORD kNameFlags    = 0x00D380A0;
 
+// The CVar callback cannot be a pointer into this DLL. The client checks every
+// function pointer it is about to call against Wow.exe's own .text and treats
+// anything else as fatal error #134 "Invalid function pointer" - the same check
+// gluebridge.cpp meets for Lua (0x0086B5A0). The first build registered
+// CVarChanged directly; the game called it on registration and died on the
+// spot with its address in the message.
+//
+// So the callback that gets registered is a 5-byte jmp written into int3
+// padding inside .text, which then jumps on to the DLL. The padding used is the
+// run right after the client's OWN UnitName* callback (0x007E60E0 ... ret at
+// 0x007E6140), fifteen bytes of CC that nothing else in this DLL claims.
+static const DWORD kCVarThunkSite  = 0x007E6141;
+static const BYTE  kCVarThunkSig[] = { 0xCC, 0xCC, 0xCC, 0xCC, 0xCC };
+static int         g_thunkReady = 0;
+
 typedef void* (__cdecl* ObjectPtr_t)(DWORD guidLo, DWORD guidHi, int typeMask,
                                      const char* file, int line);
 
@@ -170,6 +185,13 @@ static void RegisterCVar()
     if (!VerifySig(kCVarRegister, kCVarRegSig, sizeof(kCVarRegSig), "CVar::Register"))
         return;
 
+    // Without the in-.text thunk there is no callback the client will accept,
+    // and registering with a DLL pointer is a guaranteed fatal error.
+    if (!g_thunkReady) {
+        Log("no callback thunk - centurionNameTags not registered");
+        return;
+    }
+
     // Every argument exactly as the client passes its own UnitName* CVars
     // (0x007E6150), confirmed against the file rather than guessed: arg4 is the
     // default value - 0x009E14A0 is "0" and 0x009E1464 is "1", the real 3.3.5
@@ -180,7 +202,7 @@ static void RegisterCVar()
                      0,
                      0x10,
                      g_defaultOn ? "1" : "0",
-                     (void*)&CVarChanged,
+                     (void*)kCVarThunkSite,     // -> CVarChanged, see kCVarThunkSite
                      4, 0, 1, 0);
     Log("registered centurionNameTags (cvar=%p, default %d)", cvar, g_defaultOn);
 }
@@ -261,19 +283,19 @@ __declspec(naked) static void NameTagHook()
 }
 
 // ------------------------------------------------------------------ install
-static bool WriteJump(DWORD at, void* to)
+// A jmp at `at`; bytes after it up to `span` become nops, so a debugger reading
+// a hooked site does not show half an instruction. span = 5 writes the jmp alone.
+static bool WriteJump(DWORD at, void* to, size_t span)
 {
     DWORD old = 0;
-    if (!VirtualProtect((void*)at, 5, PAGE_EXECUTE_READWRITE, &old)) return false;
+    if (!VirtualProtect((void*)at, span, PAGE_EXECUTE_READWRITE, &old)) return false;
     BYTE* p = (BYTE*)at;
     p[0] = 0xE9;
     *(DWORD*)(p + 1) = (DWORD)to - (at + 5);
-    // The remaining stolen bytes become one-byte nops so a debugger reading the
-    // site does not show half an instruction.
-    for (size_t i = 5; i < kStolen; ++i) p[i] = 0x90;
+    for (size_t i = 5; i < span; ++i) p[i] = 0x90;
     DWORD ignored = 0;
-    VirtualProtect((void*)at, 5, old, &ignored);
-    FlushInstructionCache(GetCurrentProcess(), (void*)at, kStolen);
+    VirtualProtect((void*)at, span, old, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), (void*)at, span);
     return true;
 }
 
@@ -304,7 +326,13 @@ void NameTag_Install()
     // Nothing here may call into the game - see NameTagProbe. Only bytes are
     // checked and written; the CVar is registered on the first name tag.
 
-    if (!WriteJump(kNameTagSite, (void*)&NameTagHook)) {
+    // The CVar's callback, in .text where the client will accept it. Without it
+    // the probe still runs; only the toggle is missing.
+    if (VerifySig(kCVarThunkSite, kCVarThunkSig, sizeof(kCVarThunkSig), "CVar callback padding") &&
+        WriteJump(kCVarThunkSite, (void*)&CVarChanged, sizeof(kCVarThunkSig)))
+        g_thunkReady = 1;
+
+    if (!WriteJump(kNameTagSite, (void*)&NameTagHook, kStolen)) {
         Log("could not write the name tag hook - disabled");
         return;
     }
