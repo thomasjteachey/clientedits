@@ -64,10 +64,21 @@ static const BYTE  kNameTagSig[] = {
 // `push esi` can be stolen for the jmp and replayed in the trampoline.
 static const size_t kStolen = 9;
 
+// Both read off the file with peexplore (disasm), not remembered: the first
+// build guessed ObjectPtr's prologue and the fail-safe refused to install.
 static const DWORD kObjectPtr    = 0x004D4DB0;
-static const BYTE  kObjectPtrSig[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };
+static const BYTE  kObjectPtrSig[] = {
+    0x55,                                   // push ebp
+    0x8B, 0xEC,                             // mov ebp, esp
+    0x64, 0x8B, 0x0D, 0x2C, 0x00, 0x00, 0x00 // mov ecx, fs:[0x2C]  (the objmgr is per-thread)
+};
 static const DWORD kCVarRegister = 0x00767FC0;
-static const BYTE  kCVarRegSig[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC };
+static const BYTE  kCVarRegSig[] = {
+    0x55,                                   // push ebp
+    0x8B, 0xEC,                             // mov ebp, esp
+    0x83, 0xEC, 0x08,                       // sub esp, 8
+    0x53                                    // push ebx
+};
 static const DWORD kNameFlags    = 0x00D380A0;
 
 typedef void* (__cdecl* ObjectPtr_t)(DWORD guidLo, DWORD guidHi, int typeMask,
