@@ -148,16 +148,20 @@ static bool VerifySig(DWORD addr, const BYTE* sig, size_t n, const char* name)
 // NameTag_Enabled() preferring the CVar only once the callback has spoken.
 static int g_cvarSpoke = 0;
 
-static void __cdecl CVarChanged(void* cvar, void* a, const char* newValue, int userArg)
+// Returns true like the client's own callback (0x007E613D: mov al, 1 / ret),
+// which reads as "accept the new value" - a void callback would leave whatever
+// happened to be in al, and the CVar could randomly refuse to change.
+static bool __cdecl CVarChanged(void* cvar, void* a, const char* newValue, int userArg)
 {
     (void)cvar; (void)a; (void)userArg;
     if (newValue && *newValue)
         g_cvarValue = (newValue[0] != '0');
     g_cvarSpoke = 1;
     Log("centurionNameTags -> %d", g_cvarValue);
+    return true;
 }
 
-typedef void* (__cdecl* CVarRegister_t)(const char* name, const char* help, int flags,
+typedef void* (__cdecl* CVarRegister_t)(const char* name, int unknown, int flags,
                                         const char* defaultValue, void* callback,
                                         int category, int unk0, int userArg, int unk1);
 
@@ -166,9 +170,14 @@ static void RegisterCVar()
     if (!VerifySig(kCVarRegister, kCVarRegSig, sizeof(kCVarRegSig), "CVar::Register"))
         return;
 
+    // Every argument exactly as the client passes its own UnitName* CVars
+    // (0x007E6150), confirmed against the file rather than guessed: arg4 is the
+    // default value - 0x009E14A0 is "0" and 0x009E1464 is "1", the real 3.3.5
+    // defaults for Own/NPC and Guild/PVPTitle. arg2's meaning is unknown and the
+    // client always passes 0 there, so this does too.
     CVarRegister_t reg = (CVarRegister_t)kCVarRegister;
     void* cvar = reg("centurionNameTags",
-                     "show World / Tournament / Bot above player names",
+                     0,
                      0x10,
                      g_defaultOn ? "1" : "0",
                      (void*)&CVarChanged,
@@ -184,9 +193,25 @@ bool NameTag_Enabled()
 
 // ----------------------------------------------------------------- the probe
 //
-// Called with the tag record before the original body runs. Read-only.
+// Called with the tag record before the original body runs. Read-only, apart
+// from registering the CVar the first time through.
+//
+// The CVar is registered HERE and not in NameTag_Install, and that is not a
+// style choice. Install runs from DllMain, during process start and under the
+// loader lock, before Wow.exe has initialised anything - its CVar manager and
+// its allocator included. Every other module only patches bytes there; calling
+// into the game from there failed the whole process with 0xC0000142
+// (STATUS_DLL_INIT_FAILED) before a window ever opened. By the time a name tag
+// is drawn the game is fully up and this is its own main thread.
+static int g_cvarRegistered = 0;
+
 extern "C" void __cdecl NameTagProbe(void* tag)
 {
+    if (!g_cvarRegistered) {
+        g_cvarRegistered = 1;
+        RegisterCVar();
+    }
+
     if (g_probed >= g_probeLines) return;
     if (!Readable(tag, 0x20)) return;
 
@@ -276,7 +301,8 @@ void NameTag_Install()
     if (!VerifySig(kObjectPtr, kObjectPtrSig, sizeof(kObjectPtrSig), "ObjectPtr"))
         return;
 
-    RegisterCVar();
+    // Nothing here may call into the game - see NameTagProbe. Only bytes are
+    // checked and written; the CVar is registered on the first name tag.
 
     if (!WriteJump(kNameTagSite, (void*)&NameTagHook)) {
         Log("could not write the name tag hook - disabled");
