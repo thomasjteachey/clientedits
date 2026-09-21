@@ -117,6 +117,27 @@ static int  g_markerHooked = 0;
 static int  g_markerLogged = 0;
 static DWORD g_markerResume = kMarkerResume;
 
+// THE COLOUR. The tag builds its font string with flags 0xC8, pushed as an
+// immediate at 0x007E57A6 (`push 0xC8`, 68 C8 00 00 00). Bit 0x08 makes the
+// layout drop the colour a |c code sets (0x006C715B: `test [str+0x5C], 8`
+// skips the store) and take the one colour at str+0x2C for every glyph - the
+// shortcut that lets a name change colour through 0x006C6C30 without being
+// laid out again. So a tag carrying a marker is built with 0xC0 instead, and
+// the immediate goes back to 0xC8 for every other tag. The byte is only read
+// by this same thread, a few instructions after the hook, so rewriting it per
+// tag is safe.
+static const DWORD kFlagsImm    = 0x007E57A7;
+static const BYTE  kFlagsSig[]  = { 0x68, 0xC8, 0x00, 0x00, 0x00 };
+static const BYTE  kFlagsNormal = 0xC8;
+static const BYTE  kFlagsCoded  = 0xC0;
+static int         g_flagsWritable = 0;
+
+static void SetTagFlags(BYTE flags)
+{
+    if (g_flagsWritable && *(volatile BYTE*)kFlagsImm != flags)
+        *(volatile BYTE*)kFlagsImm = flags;
+}
+
 // The CVar callback cannot be a pointer into this DLL. The client checks every
 // function pointer it is about to call against Wow.exe's own .text and treats
 // anything else as fatal error #134 "Invalid function pointer" - the same check
@@ -384,9 +405,8 @@ static int MarkerFor(void* tag, void* unit)
     return g_testMarker;
 }
 
-// |c codes: whether the font string honours them is exactly what the first
-// build of this settles. If it does not, the codes print as text and the
-// marker has to take the name's own colour instead.
+// |c codes: parsed by the font's tokenizer (0x006BD64F), and honoured once the
+// tag's string is built without flag 0x08 - see kFlagsImm.
 static const char* MarkerText(int m)
 {
     switch (m) {
@@ -399,6 +419,7 @@ static const char* MarkerText(int m)
 
 extern "C" int __cdecl NameTagMarker(void* tag, void* unit, char* buf, int lines)
 {
+    SetTagFlags(kFlagsNormal);
     if (lines <= 0 || !NameTag_Enabled() || !buf || !unit || !Readable(tag, 0x20))
         return lines;
 
@@ -413,6 +434,7 @@ extern "C" int __cdecl NameTagMarker(void* tag, void* unit, char* buf, int lines
 
     memmove(buf + add, buf, have + 1);
     memcpy(buf, text, add);
+    SetTagFlags(kFlagsCoded);
 
     if (g_markerLogged < 4) {
         ++g_markerLogged;
@@ -513,7 +535,14 @@ void NameTag_Install()
     if (VerifySig(kMarkerSite, kMarkerSig, sizeof(kMarkerSig), "name tag line count") &&
         WriteJump(kMarkerSite, (void*)&MarkerHook, kMarkerStolen)) {
         g_markerHooked = 1;
-        Log("marker installed at 0x%08X (test marker %d, auras %u/%u/%u)", kMarkerSite,
-            g_testMarker, g_auraFor[MARK_WORLD], g_auraFor[MARK_TOURNAMENT], g_auraFor[MARK_BOT]);
+
+        // Left writable for good: SetTagFlags rewrites it per tag.
+        DWORD old = 0;
+        if (VerifySig(kFlagsImm - 1, kFlagsSig, sizeof(kFlagsSig), "name tag font flags") &&
+            VirtualProtect((void*)(kFlagsImm - 1), sizeof(kFlagsSig), PAGE_EXECUTE_READWRITE, &old))
+            g_flagsWritable = 1;
+        Log("marker installed at 0x%08X (test marker %d, auras %u/%u/%u, colour codes %s)", kMarkerSite,
+            g_testMarker, g_auraFor[MARK_WORLD], g_auraFor[MARK_TOURNAMENT], g_auraFor[MARK_BOT],
+            g_flagsWritable ? "on" : "OFF");
     }
 }
