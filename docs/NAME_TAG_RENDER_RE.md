@@ -139,7 +139,31 @@ layout for free (count accessor 0x004F8850):
 The probe now logs those ids per unit (deduped by guid), so a run with a known
 buff up confirms the reader before the server hands out the marker auras.
 
-## 5. Where the marker would come from
+## 5. Where the marker comes from
+
+The realm gives every player one hidden aura (custom_name_markers.cpp, config
+`Centurion.NameMarkers.Enable`): **92010 World Character**, **92011 Tournament
+Character**, **92012 Playerbot**, clones of Ghostwalk 90218 (hidden, dummy,
+not cancellable, kept through death and the arena strip). The DLL defaults to
+those ids; `[NameTag] WorldAura / TournamentAura / BotAura` override them.
+
+A tag is only rebuilt when the client dirties it (tag+0x18: bit 1 text, bit 2
+colour), and an aura landing does not. So the pre-hook at 0x007E5640 keeps what
+each tag was last built with and sets both bits when that differs from what it
+should carry now - which is also what makes the `centurionNameTags` toggle
+take effect at once.
+
+### Colour codes - SETTLED
+
+The font string is built with flags 0xC8, and bit **0x08** makes the layout
+skip the colour a `|c` code sets (0x006C715B) - one colour for the whole string,
+so a name can recolour through 0x006C6C30 without a relayout. A marked tag is
+built with **0xC0** instead (the pushed immediate at 0x007E57A7 is rewritten per
+tag). Confirmed in game: the marker takes its own colour, centred over the name.
+
+## 6. Earlier plan (superseded by section 5)
+
+
 
 The client has to know which of the three a unit is. The realm already gates
 client features on hidden auras (see `PLAYER_COLLISION_DESIGN.md`), and both
