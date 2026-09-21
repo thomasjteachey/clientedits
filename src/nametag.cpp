@@ -112,7 +112,41 @@ static const DWORD kAuraSpell       = 0x08;
 enum Marker { MARK_NONE = 0, MARK_WORLD, MARK_TOURNAMENT, MARK_BOT };
 
 static int  g_testMarker = MARK_NONE;   // [NameTag] TestMarker: every player gets it
-static DWORD g_auraFor[4] = { 0 };      // [NameTag] WorldAura / TournamentAura / BotAura
+// The auras the server hands out (custom_name_markers.cpp on the realm):
+// 92010 World Character, 92011 Tournament Character, 92012 Playerbot.
+// [NameTag] WorldAura / TournamentAura / BotAura override them.
+static const DWORD kDefaultAura[4] = { 0, 92010, 92011, 92012 };
+static DWORD g_auraFor[4] = { 0, 92010, 92011, 92012 };
+
+// Which marker each tag's text was last BUILT with. A tag is only rebuilt when
+// the client marks it dirty, and nothing the client does marks it dirty when an
+// aura arrives - so a marker aura that lands after the name was first drawn, or
+// a flip of the CVar, would never show. The pre-hook compares this with what
+// the tag should carry now and sets the tag's dirty bits (text 1, colour 2 at
+// tag+0x18, see 0x007E56C0 / 0x007E56F8) when they differ.
+struct BuiltMark { void* tag; int mark; };
+static BuiltMark g_built[1024];
+
+static BuiltMark* BuiltSlot(void* tag, bool claim)
+{
+    unsigned h = ((DWORD)tag >> 3) & 1023;
+    for (int i = 0; i < 4; ++i) {
+        BuiltMark* b = &g_built[(h + i) & 1023];
+        if (b->tag == tag)
+            return b;
+    }
+    if (!claim)
+        return NULL;
+    // Not there: take the first slot of the run (stale tags are harmless -
+    // at worst a tag is rebuilt once more than it needed to be).
+    for (int i = 0; i < 4; ++i) {
+        BuiltMark* b = &g_built[(h + i) & 1023];
+        if (!b->tag) { b->tag = tag; return b; }
+    }
+    BuiltMark* b = &g_built[h];
+    b->tag = tag;
+    return b;
+}
 static int  g_markerHooked = 0;
 static int  g_markerLogged = 0;
 static DWORD g_markerResume = kMarkerResume;
@@ -284,6 +318,9 @@ bool NameTag_Enabled()
 // is drawn the game is fully up and this is its own main thread.
 static int g_cvarRegistered = 0;
 
+// Defined with the marker, further down.
+static int WantedMarker(void* tag, void* unit);
+
 extern "C" void __cdecl NameTagProbe(void* tag)
 {
     if (!g_cvarRegistered) {
@@ -291,8 +328,21 @@ extern "C" void __cdecl NameTagProbe(void* tag)
         RegisterCVar();
     }
 
-    if (g_probed >= g_probeLines) return;
     if (!Readable(tag, 0x20)) return;
+
+    if (g_markerHooked) {
+        DWORD lo = *(DWORD*)((BYTE*)tag + 0x10);
+        DWORD hi = *(DWORD*)((BYTE*)tag + 0x14);
+        if ((lo || hi) && !(hi & 0xFFFF0000)) {
+            void* u = ((ObjectPtr_t)kObjectPtr)(lo, hi, 1, "nametag.cpp", 0);
+            int const want = WantedMarker(tag, u);
+            BuiltMark* b = BuiltSlot(tag, false);
+            if ((b ? b->mark : MARK_NONE) != want)
+                *(DWORD*)((BYTE*)tag + 0x18) |= 3;
+        }
+    }
+
+    if (g_probed >= g_probeLines) return;
 
     DWORD guidLo = *(DWORD*)((BYTE*)tag + 0x10);
     DWORD guidHi = *(DWORD*)((BYTE*)tag + 0x14);
@@ -417,13 +467,21 @@ static const char* MarkerText(int m)
     return NULL;
 }
 
+static int WantedMarker(void* tag, void* unit)
+{
+    if (!NameTag_Enabled() || !unit || !Readable(tag, 0x20))
+        return MARK_NONE;
+    return MarkerFor(tag, unit);
+}
+
 extern "C" int __cdecl NameTagMarker(void* tag, void* unit, char* buf, int lines)
 {
     SetTagFlags(kFlagsNormal);
-    if (lines <= 0 || !NameTag_Enabled() || !buf || !unit || !Readable(tag, 0x20))
-        return lines;
+    int const mark = lines > 0 && buf ? WantedMarker(tag, unit) : MARK_NONE;
+    if (BuiltMark* b = BuiltSlot(tag, true))
+        b->mark = mark;
 
-    const char* text = MarkerText(MarkerFor(tag, unit));
+    const char* text = MarkerText(mark);
     if (!text)
         return lines;
 
@@ -501,9 +559,9 @@ void NameTag_LoadSettings(const char* dir)
                  : !_stricmp(mark, "Bot")        ? MARK_BOT
                  : MARK_NONE;
 
-    g_auraFor[MARK_WORLD]      = GetPrivateProfileIntA("NameTag", "WorldAura", 0, ini);
-    g_auraFor[MARK_TOURNAMENT] = GetPrivateProfileIntA("NameTag", "TournamentAura", 0, ini);
-    g_auraFor[MARK_BOT]        = GetPrivateProfileIntA("NameTag", "BotAura", 0, ini);
+    g_auraFor[MARK_WORLD]      = GetPrivateProfileIntA("NameTag", "WorldAura", kDefaultAura[MARK_WORLD], ini);
+    g_auraFor[MARK_TOURNAMENT] = GetPrivateProfileIntA("NameTag", "TournamentAura", kDefaultAura[MARK_TOURNAMENT], ini);
+    g_auraFor[MARK_BOT]        = GetPrivateProfileIntA("NameTag", "BotAura", kDefaultAura[MARK_BOT], ini);
 }
 
 void NameTag_Install()
