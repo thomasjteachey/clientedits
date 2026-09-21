@@ -151,6 +151,7 @@ BPlusHiddenAuras.lua
 BPlusPVPPortraitFix.lua
 CenturionChatFilters.lua
 CenturionWhisper.lua
+CenturionNameTags.lua
 
 ## add new modules above here
 LocalizationPost.xml

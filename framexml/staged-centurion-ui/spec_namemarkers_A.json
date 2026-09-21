@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "name-marker-auras",
+  "stage": "/tmp/centmode/namemarkers/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "DBFilesClient\\Spell.dbc": "45ffd0f44bbc77c4ef5595abc3cf13af"
+  }
+}

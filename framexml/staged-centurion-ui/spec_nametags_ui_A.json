@@ -1,0 +1,10 @@
+{
+  "name": "patch-enUS-A",
+  "change": "name-marker-toggle",
+  "stage": "/tmp/centmode/nametagui/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\FrameXML.toc": "88f9e6bfe48994f1834867d69db0ec57",
+    "Interface\\FrameXML\\CenturionNameTags.lua": null
+  }
+}

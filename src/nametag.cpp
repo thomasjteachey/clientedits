@@ -46,8 +46,8 @@
 #include "nametag.h"
 
 static char g_dir[MAX_PATH] = { 0 };
-static int  g_enabled = 0;          // [NameTag] Enabled
-static int  g_probeLines = 12;      // [NameTag] ProbeLines, 0 = no probe logging
+static int  g_enabled = 1;          // [NameTag] Enabled
+static int  g_probeLines = 0;       // [NameTag] ProbeLines, 0 = no probe logging
 static int  g_defaultOn = 1;        // [NameTag] DefaultOn -> the CVar's default
 static int  g_cvarValue = 1;        // what the CVar currently says
 static int  g_probed = 0;
@@ -264,6 +264,16 @@ static bool __cdecl CVarChanged(void* cvar, void* a, const char* newValue, int u
         g_cvarValue = (newValue[0] != '0');
     g_cvarSpoke = 1;
     Log("centurionNameTags -> %d", g_cvarValue);
+
+    // Remember the choice. The CVar is registered after Config.wtf has been
+    // read, so the ini is what carries it to the next session: its DefaultOn
+    // becomes the CVar's default at the next registration.
+    if (g_cvarValue != g_defaultOn) {
+        char ini[MAX_PATH];
+        _snprintf_s(ini, sizeof(ini), _TRUNCATE, "%sAnimSpeedFix.ini", g_dir);
+        WritePrivateProfileStringA("NameTag", "DefaultOn", g_cvarValue ? "1" : "0", ini);
+        g_defaultOn = g_cvarValue;
+    }
     return true;
 }
 
@@ -271,8 +281,14 @@ typedef void* (__cdecl* CVarRegister_t)(const char* name, int unknown, int flags
                                         const char* defaultValue, void* callback,
                                         int category, int unk0, int userArg, int unk1);
 
+static int g_cvarRegistered = 0;
+
 static void RegisterCVar()
 {
+    if (g_cvarRegistered)
+        return;
+    g_cvarRegistered = 1;
+
     if (!VerifySig(kCVarRegister, kCVarRegSig, sizeof(kCVarRegSig), "CVar::Register"))
         return;
 
@@ -298,6 +314,13 @@ static void RegisterCVar()
     Log("registered centurionNameTags (cvar=%p, default %d)", cvar, g_defaultOn);
 }
 
+void NameTag_RegisterCVar()
+{
+    // Only once the install has written the in-.text callback thunk.
+    if (g_enabled && g_thunkReady)
+        RegisterCVar();
+}
+
 bool NameTag_Enabled()
 {
     if (!g_enabled) return false;
@@ -316,17 +339,12 @@ bool NameTag_Enabled()
 // into the game from there failed the whole process with 0xC0000142
 // (STATUS_DLL_INIT_FAILED) before a window ever opened. By the time a name tag
 // is drawn the game is fully up and this is its own main thread.
-static int g_cvarRegistered = 0;
-
 // Defined with the marker, further down.
 static int WantedMarker(void* tag, void* unit);
 
 extern "C" void __cdecl NameTagProbe(void* tag)
 {
-    if (!g_cvarRegistered) {
-        g_cvarRegistered = 1;
-        RegisterCVar();
-    }
+    RegisterCVar();
 
     if (!Readable(tag, 0x20)) return;
 
@@ -547,8 +565,10 @@ void NameTag_LoadSettings(const char* dir)
     char ini[MAX_PATH];
     _snprintf_s(ini, sizeof(ini), _TRUNCATE, "%sAnimSpeedFix.ini", g_dir);
 
-    g_enabled    = GetPrivateProfileIntA("NameTag", "Enabled", 0, ini);
-    g_probeLines = GetPrivateProfileIntA("NameTag", "ProbeLines", 12, ini);
+    // ON by default: players get no ini (package.ps1 ships only the DLL), and the
+    // marker is theirs to switch off in Interface > AddOns > Centurion.
+    g_enabled    = GetPrivateProfileIntA("NameTag", "Enabled", 1, ini);
+    g_probeLines = GetPrivateProfileIntA("NameTag", "ProbeLines", 0, ini);
     g_defaultOn  = GetPrivateProfileIntA("NameTag", "DefaultOn", 1, ini);
     g_cvarValue  = g_defaultOn;
 
