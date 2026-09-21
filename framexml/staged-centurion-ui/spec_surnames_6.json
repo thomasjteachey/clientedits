@@ -1,0 +1,12 @@
+{
+  "name": "patch-enUS-6",
+  "change": "surnames",
+  "stage": "/tmp/centmode/local-surnames/stage6",
+  "backup_dir": null,
+  "files": {
+    "Interface\\GlueXML\\CharacterCreate.xml": "15724a3926c77ffbef3b63cf69c95f9e",
+    "Interface\\GlueXML\\CharacterCreate.lua": "e68933425d4ca021ca173cdd9721db8e",
+    "Interface\\GlueXML\\CharacterSelect.xml": "ed259b5dd9e2652a3080203dfd60c8fc",
+    "Interface\\GlueXML\\CharacterSelect.lua": "0a1a48f356b48ab67b4223712527440d"
+  }
+}

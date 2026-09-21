@@ -1,0 +1,13 @@
+{
+  "name": "patch-enUS-A",
+  "change": "colosseum-spelling",
+  "stage": "/tmp/centmode/coliseum/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "DBFilesClient\\AreaTable.dbc": "249a3c22f4bb8d03529f22f1c0203782",
+    "DBFilesClient\\Map.dbc": "2ebf9ede5fa9ab193a70c7c466d203a3",
+    "DBFilesClient\\BattlemasterList.dbc": "f3b3ba3639b6551f44443b559dd96929",
+    "DBFilesClient\\WorldSafeLocs.dbc": "0c04b360f18a23063cf81b69a6448c45",
+    "DBFilesClient\\WMOAreaTable.dbc": "42f21e47d306d416b1eb11cf8b398525"
+  }
+}

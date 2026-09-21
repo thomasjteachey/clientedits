@@ -1,0 +1,10 @@
+{
+  "name": "patch-enUS-A",
+  "change": "surnames-whisper",
+  "stage": "/tmp/centmode/local-surnames/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\FrameXML.toc": "fdd102c7abc219d16358b19f69b87e6d",
+    "Interface\\FrameXML\\CenturionWhisper.lua": null
+  }
+}
