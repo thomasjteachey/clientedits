@@ -1,0 +1,10 @@
+{
+  "name": "patch-enUS-A",
+  "change": "full-name-limits",
+  "stage": "/tmp/centmode/namelimits/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\FrameXML.toc": "c71679c030c1425d3a68f2cba22909c6",
+    "Interface\\FrameXML\\CenturionNameLimits.lua": null
+  }
+}
