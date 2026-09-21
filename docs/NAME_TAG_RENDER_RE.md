@@ -66,6 +66,52 @@ It has **no direct callers** — nothing does `call 0x7E5640`. It is reached
 through the dispatch table at **0x00D380B0** (`jmp dword ptr [ecx + 0xD380B0]`
 at 0x007E53F4), so a hook goes on the function itself, not on a call site.
 
+## 2.5 RUNTIME PROBE, 2026-09-20 - the pipeline, end to end
+
+The stage-1 probe (`src/nametag.cpp`) logged the unit's vtable for the player
+it saw: **0x00A326C8**. Reading that vtable statically gives the same +0xD0
+the probe logged at runtime, so the slots below are read straight off the file.
+
+| slot | function | what it does |
+|---|---|---|
+| +0x78 | 0x00718AC0 | **name colour**. Writes one ARGB dword to its argument: a fixed colour from 0x00ADAA98 when `unit+0xA30 & 0x10`, otherwise the reaction colour from the unit's guid via 0x00521BF0. The tag keeps it at `tag+0x0C`. |
+| +0xCC | 0x006E6FA0 -> 0x0072D4F0 | **name-tag text**. `(mask, char* out, size 0x400)`; writes the whole tag as ONE newline-separated block and **returns the number of lines**. The guild line is appended with the format `"\n<%s>"` (0x00A34CB4); the name itself is assembled with `"%s%s%s%s%s%s%s%s%s"` (0x00A34C88), and cross-realm names get FOREIGN_SERVER_LABEL. |
+| +0xD0 | 0x00729C70 | **visibility policy**. Fetches the active player and the unit's owner/charmer and returns which name-display bits apply (own, pet, enemy player, guild line...). Decides *whether*, not *what*. |
+
+And inside 0x007E5640, the part that only runs when the tag is **dirty**
+(`tag+0x18 & 2`, cleared on the way in):
+
+1. `[vtable+0x78](&tag+0x0C)` - the colour.
+2. A 0x400-byte stack buffer at `[ebp-0x4EC]` is zeroed, then
+   `[vtable+0xCC](mask, buffer, 0x400)` fills it; the returned line count
+   times a constant becomes the tag's height at `tag+0x30`.
+3. **0x006BE2B0** - the font-string constructor - is called with the name-tag
+   font at **`[0x00D380AC]`**, the text (after 0x00482110), `&tag+0x08` for the
+   result, flags 2 and 1, max width 0xC8, **a pointer to the colour** and two
+   scale floats. `tag+0x08` is the resulting font string, linked into the
+   font's list (0x006BDFC0 is the generic unlink that drops it).
+
+Every frame after that, the tag only draws that finished string as one quad
+whose vertex colour carries nothing but the distance fade - which is why the
+quad read in section 2 had alpha and no colour. The colour is baked into the
+string when it is built.
+
+### What this means
+
+- **The name is rebuilt only when dirty**, so anything done in the dirty block
+  costs nothing per frame.
+- **Colouring a name** is one override of the dword `[vtable+0x78]` writes.
+- **A marker line** does not need its own projection or font: prepend
+  `"<marker>\n"` to the buffer after `[vtable+0xCC]` returns (the call site is
+  0x007E5754, `call edx`; the instructions after it, `test eax, eax` /
+  `mov [ebp-0x10], eax` at 0x007E5756, are five relocation-free bytes to hook)
+  and add one to the line count it returned. The height, the fade, the distance
+  gate and the position all follow for free.
+- The string is drawn in ONE colour. A marker in a colour of its own needs
+  WoW's inline `|cffRRGGBB...|r` codes to be honoured by 0x006BE2B0 (and
+  0x00482110 before it). That is the one thing left to prove, and a single test
+  build that prepends a coloured line proves it either way.
+
 ## 3. What is still open
 
 The static pass did not reach two things, and neither is guessable:
