@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-6",
+  "change": "racechange",
+  "stage": "/tmp/centmode/racechange/stage6",
+  "backup_dir": null,
+  "files": {
+    "Interface\\GlueXML\\CharacterCreate.lua": "19ffc3a25550b9c147ec8104995c41be"
+  }
+}

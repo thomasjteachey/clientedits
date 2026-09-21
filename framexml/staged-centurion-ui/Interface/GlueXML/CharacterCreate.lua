@@ -530,25 +530,30 @@ function CharacterChangeFixup()
 			end
 		end
 
+		-- CENTURION: the race buttons are laid out 4+4 by the remap patch below,
+		-- so button i is not race i; each button carries the race it shows as
+		-- button.raceIndex. Judging button i as race i enabled the wrong icons
+		-- (a Tauren shaman was offered Dwarf and not Troll).
 		for i=1, MAX_RACES, 1 do
+			local button = _G["CharacterCreateRaceButton"..i];
+			local race = button.raceIndex or i;
 			local allow = false;
 			if ( PAID_SERVICE_TYPE == PAID_FACTION_CHANGE ) then
 				local faction = GetFactionForRace(PaidChange_GetCurrentRaceIndex());
-				if ( (i == PaidChange_GetCurrentRaceIndex()) or ((GetFactionForRace(i) ~= faction) and (IsRaceClassValid(i,CharacterCreate.selectedClass))) ) then
+				if ( (race == PaidChange_GetCurrentRaceIndex()) or ((GetFactionForRace(race) ~= faction) and (IsRaceClassValid(race,CharacterCreate.selectedClass))) ) then
 					allow = true;
 				end
 			elseif ( PAID_SERVICE_TYPE == PAID_RACE_CHANGE ) then
 				local faction = GetFactionForRace(PaidChange_GetCurrentRaceIndex());
-				if ( (i == PaidChange_GetCurrentRaceIndex()) or ((GetFactionForRace(i) == faction) and (IsRaceClassValid(i,CharacterCreate.selectedClass))) ) then
+				if ( (race == PaidChange_GetCurrentRaceIndex()) or ((GetFactionForRace(race) == faction) and (IsRaceClassValid(race,CharacterCreate.selectedClass))) ) then
 					allow = true
 				end
 			elseif ( PAID_SERVICE_TYPE == PAID_CHARACTER_CUSTOMIZATION ) then
-				if ( i == CharacterCreate.selectedRace ) then
+				if ( race == CharacterCreate.selectedRace ) then
 					allow = true
 				end
 			end
 			if (not allow) then
-				local button = _G["CharacterCreateRaceButton"..i];
 				button:Disable();
 				SetButtonDesaturated(button, true)
 			end
@@ -1158,8 +1163,11 @@ local CENTURION_NAME_EDIT_X_ALONE = 0;
 -- Half of (box width 156 + gap 8), so the two boxes straddle the centre.
 local CENTURION_NAME_EDIT_X_PAIRED = -82;
 
+-- The paid-change screens (customize, race change) get the pair too: they send
+-- the first name in the packet and the family name ahead of it, and the server
+-- keeps the one on file if none arrives.
 function CharacterCreate_SurnamesEnabled()
-	return CenturionGlueRequest ~= nil and not PAID_SERVICE_TYPE and CharacterCreate_IsTournamentRealm();
+	return CenturionGlueRequest ~= nil and CharacterCreate_IsTournamentRealm();
 end
 
 function CharacterCreate_UpdateSurnameLayout()
@@ -1253,6 +1261,16 @@ function CharacterCreate_OnShow(...)
 	_origCharacterCreate_OnShow_Surname(...);
 	if ( CharacterCreateSurnameEdit ) then
 		CharacterCreateSurnameEdit:SetText("");
+		-- A paid change starts from the name the list shows, "First Last":
+		-- one half in each box.
+		if ( PAID_SERVICE_TYPE and CharacterCreate_SurnamesEnabled() ) then
+			local full = PaidChange_GetName() or "";
+			local first, last = string.match(full, "^(%S+)%s+(%S+)");
+			if ( first ) then
+				CharacterCreateNameEdit:SetText(first);
+				CharacterCreateSurnameEdit:SetText(last);
+			end
+		end
 		CharacterCreate_UpdateSurnameLayout();
 	end
 end
