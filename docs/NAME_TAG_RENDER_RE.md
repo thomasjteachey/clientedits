@@ -112,33 +112,32 @@ string when it is built.
   0x00482110 before it). That is the one thing left to prove, and a single test
   build that prepends a coloured line proves it either way.
 
-## 3. What is still open
+## 3. Stage 2 - the marker (src/nametag.cpp)
 
-The static pass did not reach two things, and neither is guessable:
+Hooked at 0x007E5756, right after `[vtable+0xCC]` returns: the hook prepends
+`|cff73bfffWorld|r
+` (or Tournament in orange, Bot in purple) to the buffer
+and returns the line count plus one. Gated on `NameTag_Enabled()`, i.e. the
+`centurionNameTags` CVar. Two things the first run of it settles:
 
-- **Where the glyphs are drawn.** The quad above carries a colour whose only
-  varying component is alpha, which reads more like a background or shadow than
-  the lettering. The text itself is emitted somewhere past this, or by whatever
-  consumes the batch.
-- **World → screen for the text baseline.** 0x007E52A0 is a distance test, not
-  a projection, so the projection is elsewhere - possibly already done by the
-  caller, since the position globals at 0x00AF46AC are written before this runs.
+- whether 0x006BE2B0 honours `|c...|r` (if not, the codes show as text);
+- whether a taller tag grows upward, so the name stays where it was.
 
-Both want the same experiment: hook 0x007E5640, log `this`, the guid, the value
-from vtable+0xD0 and the batch pointer for one frame with one player on screen,
-then walk what the batch receives. The tracer in `src/trace.h` is the tool.
+The tag only rebuilds when dirty, so flipping the CVar shows on each name the
+next time the client rebuilds it (retarget, zone in, name change), not at once.
 
-## 4. What this means for the two designs
+## 4. Reading the unit's auras
 
-**Colouring the name** is well anchored already: the value from
-`[unitVtable + 0xD0]` decides what is drawn per unit, and per-vertex colour is
-written in plain sight in this function. A hook there can pick a colour per
-unit with what is known today.
+The name builder 0x0072D4F0 walks the aura array itself, which gives the
+layout for free (count accessor 0x004F8850):
 
-**Adding a third line above the name** needs the two open items first. The
-encouraging part is step 3: the engine already stacks *two* lines from one
-packed value, so a third is following a path the code already walks rather
-than inventing one.
+    count = [unit+0xDD0]
+    if count == -1: count = [unit+0xC54], entries = [unit+0xC58]
+    else:           entries = unit+0xC50
+    entry stride 0x18, spell id at +0x08
+
+The probe now logs those ids per unit (deduped by guid), so a run with a known
+buff up confirms the reader before the server hands out the marker auras.
 
 ## 5. Where the marker would come from
 

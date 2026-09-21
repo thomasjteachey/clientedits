@@ -81,6 +81,42 @@ static const BYTE  kCVarRegSig[] = {
 };
 static const DWORD kNameFlags    = 0x00D380A0;
 
+// STAGE 2 - the marker line. Inside 0x007E5640's dirty block:
+//
+//     0x007E5754  call edx              ; [unitVtable+0xCC](mask, buf, 0x400)
+//     0x007E5756  test eax, eax         ; eax = number of lines written
+//     0x007E5758  mov [ebp-0x10], eax
+//     0x007E575B  fild dword [ebp-0x10] ; -> the tag's height
+//
+// The five bytes at 0x007E5756 are relocation-free. The hook prepends a line
+// to the buffer (ebp-0x4EC) and returns the new count, then replays them. The
+// jge at 0x007E575E reads the flags of that replayed `test`; fild leaves the
+// flags alone.
+static const DWORD kMarkerSite   = 0x007E5756;
+static const BYTE  kMarkerSig[]  = { 0x85, 0xC0, 0x89, 0x45, 0xF0, 0xDB, 0x45, 0xF0 };
+static const size_t kMarkerStolen = 5;
+static const DWORD kMarkerResume = 0x007E575B;
+
+// The unit's auras, read exactly the way the client's own name builder
+// (0x0072D4F0) and its count accessor (0x004F8850) read them:
+//   count = [unit+0xDD0]; if that is -1, count = [unit+0xC54] and the entries
+//   live at [unit+0xC58], otherwise inline from unit+0xC50. 0x18 bytes each,
+//   spell id at +0x08.
+static const DWORD kAuraInlineCount = 0xDD0;
+static const DWORD kAuraHeapCount   = 0xC54;
+static const DWORD kAuraHeapPtr     = 0xC58;
+static const DWORD kAuraInline      = 0xC50;
+static const DWORD kAuraStride      = 0x18;
+static const DWORD kAuraSpell       = 0x08;
+
+enum Marker { MARK_NONE = 0, MARK_WORLD, MARK_TOURNAMENT, MARK_BOT };
+
+static int  g_testMarker = MARK_NONE;   // [NameTag] TestMarker: every player gets it
+static DWORD g_auraFor[4] = { 0 };      // [NameTag] WorldAura / TournamentAura / BotAura
+static int  g_markerHooked = 0;
+static int  g_markerLogged = 0;
+static DWORD g_markerResume = kMarkerResume;
+
 // The CVar callback cannot be a pointer into this DLL. The client checks every
 // function pointer it is about to call against Wow.exe's own .text and treats
 // anything else as fatal error #134 "Invalid function pointer" - the same check
@@ -253,12 +289,41 @@ extern "C" void __cdecl NameTagProbe(void* tag)
             nameFn = *(void**)((BYTE*)vtable + 0xD0);
     }
 
+    // One line per unit: the first run spent all twelve on the same player.
+    static DWORD seen[64];
+    for (int i = 0; i < g_probed && i < 64; ++i)
+        if (seen[i] == guidLo) return;
+    if (g_probed < 64) seen[g_probed] = guidLo;
+
+    // The first few aura spell ids, read the way the marker reads them, so the
+    // log shows whether that reader lines up with the buffs actually on the unit.
+    char auras[160] = { 0 };
+    if (unit) {
+        BYTE* u = (BYTE*)unit;
+        if (Readable(u + kAuraInline, kAuraInlineCount - kAuraInline + 4)) {
+            DWORD count = *(DWORD*)(u + kAuraInlineCount);
+            BYTE* entries = u + kAuraInline;
+            if (count == 0xFFFFFFFF) {
+                count = *(DWORD*)(u + kAuraHeapCount);
+                entries = *(BYTE**)(u + kAuraHeapPtr);
+            }
+            size_t at = _snprintf_s(auras, sizeof(auras), _TRUNCATE, "%u:", count);
+            for (DWORD i = 0; i < count && i < 12 && entries && Readable(entries + i * kAuraStride, kAuraStride); ++i) {
+                int n = _snprintf_s(auras + at, sizeof(auras) - at, _TRUNCATE, " %u",
+                                    *(DWORD*)(entries + i * kAuraStride + kAuraSpell));
+                if (n < 0) break;
+                at += n;
+            }
+        }
+    }
+
     ++g_probed;
-    Log("tag=%p guid=%08X%08X flags=0x%X unit=%p vtable=%p vtable+0xD0=%p mask=0x%X",
-        tag, guidHi, guidLo, flags, unit, vtable, nameFn, *(DWORD*)kNameFlags);
+    Log("tag=%p guid=%08X%08X flags=0x%X unit=%p vtable=%p auras=[%s] mask=0x%X",
+        tag, guidHi, guidLo, flags, unit, vtable, auras, *(DWORD*)kNameFlags);
+    (void)nameFn;
 
     if (g_probed == g_probeLines)
-        Log("probe budget spent; go read vtable+0xD0 and what it returns");
+        Log("probe budget spent");
 }
 
 // The hook: log, then run the stolen prologue and jump back past it.
@@ -279,6 +344,100 @@ __declspec(naked) static void NameTagHook()
         mov  ebp, esp
         sub  esp, 0x4EC
         jmp  [g_resume]
+    }
+}
+
+// ---------------------------------------------------------------- the marker
+
+// Whether the unit carries the aura spellId.
+static bool AnyAura(void* unit, DWORD spellId)
+{
+    BYTE* u = (BYTE*)unit;
+    if (!spellId || !Readable(u + kAuraInline, kAuraInlineCount - kAuraInline + 4))
+        return false;
+
+    DWORD count = *(DWORD*)(u + kAuraInlineCount);
+    BYTE* entries = u + kAuraInline;
+    if (count == 0xFFFFFFFF) {
+        count = *(DWORD*)(u + kAuraHeapCount);
+        entries = *(BYTE**)(u + kAuraHeapPtr);
+    }
+    if (!entries || count > 255 || !Readable(entries, count * kAuraStride))
+        return false;
+
+    for (DWORD i = 0; i < count; ++i)
+        if (*(DWORD*)(entries + i * kAuraStride + kAuraSpell) == spellId)
+            return true;
+    return false;
+}
+
+static int MarkerFor(void* tag, void* unit)
+{
+    // Players only: a player guid's high word is zero (HighGuid::Player).
+    DWORD guidHi = *(DWORD*)((BYTE*)tag + 0x14);
+    if (guidHi & 0xFFFF0000)
+        return MARK_NONE;
+
+    for (int m = MARK_WORLD; m <= MARK_BOT; ++m)
+        if (AnyAura(unit, g_auraFor[m]))
+            return m;
+    return g_testMarker;
+}
+
+// |c codes: whether the font string honours them is exactly what the first
+// build of this settles. If it does not, the codes print as text and the
+// marker has to take the name's own colour instead.
+static const char* MarkerText(int m)
+{
+    switch (m) {
+    case MARK_WORLD:      return "|cff73bfffWorld|r\n";
+    case MARK_TOURNAMENT: return "|cffff9933Tournament|r\n";
+    case MARK_BOT:        return "|cffb266ffBot|r\n";
+    }
+    return NULL;
+}
+
+extern "C" int __cdecl NameTagMarker(void* tag, void* unit, char* buf, int lines)
+{
+    if (lines <= 0 || !NameTag_Enabled() || !buf || !unit || !Readable(tag, 0x20))
+        return lines;
+
+    const char* text = MarkerText(MarkerFor(tag, unit));
+    if (!text)
+        return lines;
+
+    size_t have = strnlen(buf, 0x400);
+    size_t add  = strlen(text);
+    if (have + add >= 0x400)
+        return lines;
+
+    memmove(buf + add, buf, have + 1);
+    memcpy(buf, text, add);
+
+    if (g_markerLogged < 4) {
+        ++g_markerLogged;
+        Log("marker: lines %d -> %d, text \"%s\"", lines, lines + 1, buf);
+    }
+    return lines + 1;
+}
+
+__declspec(naked) static void MarkerHook()
+{
+    __asm {
+        pushad
+        push eax                    // lines written
+        lea  edx, [ebp - 0x4EC]
+        push edx                    // the text buffer
+        push ebx                    // the unit
+        push esi                    // the tag
+        call NameTagMarker
+        add  esp, 16
+        mov  [esp + 0x1C], eax      // pushad's eax slot
+        popad
+
+        test eax, eax               // the stolen bytes, replayed
+        mov  [ebp - 0x10], eax
+        jmp  [g_markerResume]
     }
 }
 
@@ -312,6 +471,17 @@ void NameTag_LoadSettings(const char* dir)
     g_probeLines = GetPrivateProfileIntA("NameTag", "ProbeLines", 12, ini);
     g_defaultOn  = GetPrivateProfileIntA("NameTag", "DefaultOn", 1, ini);
     g_cvarValue  = g_defaultOn;
+
+    char mark[32] = { 0 };
+    GetPrivateProfileStringA("NameTag", "TestMarker", "", mark, sizeof(mark), ini);
+    g_testMarker = !_stricmp(mark, "World")      ? MARK_WORLD
+                 : !_stricmp(mark, "Tournament") ? MARK_TOURNAMENT
+                 : !_stricmp(mark, "Bot")        ? MARK_BOT
+                 : MARK_NONE;
+
+    g_auraFor[MARK_WORLD]      = GetPrivateProfileIntA("NameTag", "WorldAura", 0, ini);
+    g_auraFor[MARK_TOURNAMENT] = GetPrivateProfileIntA("NameTag", "TournamentAura", 0, ini);
+    g_auraFor[MARK_BOT]        = GetPrivateProfileIntA("NameTag", "BotAura", 0, ini);
 }
 
 void NameTag_Install()
@@ -337,4 +507,13 @@ void NameTag_Install()
         return;
     }
     Log("probe installed at 0x%08X (%d lines)", kNameTagSite, g_probeLines);
+
+    // The marker is its own hook: without it the probe and the toggle still
+    // work, the tag is just drawn the way the client always drew it.
+    if (VerifySig(kMarkerSite, kMarkerSig, sizeof(kMarkerSig), "name tag line count") &&
+        WriteJump(kMarkerSite, (void*)&MarkerHook, kMarkerStolen)) {
+        g_markerHooked = 1;
+        Log("marker installed at 0x%08X (test marker %d, auras %u/%u/%u)", kMarkerSite,
+            g_testMarker, g_auraFor[MARK_WORLD], g_auraFor[MARK_TOURNAMENT], g_auraFor[MARK_BOT]);
+    }
 }
