@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-6",
+  "change": "notweaks-notice",
+  "stage": "/tmp/centmode/notweaks/stage6",
+  "backup_dir": null,
+  "files": {
+    "Interface\\GlueXML\\CharacterCreate.lua": "2c3cd3cfbd60f6ec5d86091871fe0adc"
+  }
+}

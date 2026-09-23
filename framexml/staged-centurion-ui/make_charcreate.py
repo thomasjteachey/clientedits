@@ -650,8 +650,20 @@ function CharacterCreate_SurnameIsValid(surname)
 	return true;
 end
 
+-- Without the DLL there is no LAST NAME box, and the server refuses a new
+-- character that arrives without a family name (CHAR_CREATE_FAILED, "Character
+-- creation failed"). Say what is actually wrong before sending it, rather than
+-- leave the player retrying names.
+CENTURION_NO_CLIENT_TWEAKS = "Your game is not loading the Centurion client tweaks (dinput8.dll in your World of Warcraft folder), so it cannot send your character's last name, and this realm needs one.\\n\\nStart the game from the Centurion launcher, and check that your antivirus has not removed dinput8.dll.";
+
 local _origCharacterCreate_Okay_Surname = CharacterCreate_Okay;
 function CharacterCreate_Okay(...)
+	if ( not PAID_SERVICE_TYPE and CenturionGlueRequest == nil and CharacterCreate_IsTournamentRealm() ) then
+		if ( GlueDialog_Show ) then
+			GlueDialog_Show("OKAY", CENTURION_NO_CLIENT_TWEAKS);
+		end
+		return;
+	end
 	if ( CharacterCreate_SurnamesEnabled() and CharacterCreateSurnameEdit ) then
 		-- Required: the server refuses to create a character without one, so say
 		-- so here, where the player can still do something about it.
