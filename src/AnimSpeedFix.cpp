@@ -46,6 +46,7 @@
 #include "gluebridge.h"
 #include "nametag.h"
 #include "rulerelax.h"
+#include "sndguard.h"
 
 #define DEFAULT_LOCK_ANIMS   "119,223"     // StealthWalk, StealthRun
 #define DEFAULT_ATTACK_ANIMS "16,17,18,19,46,49,85,86,87,88,107,117,482"
@@ -503,6 +504,11 @@ static void Install(HMODULE self)
     // requirement"): its own [RuleRelax] section, ON by default keyed on 90217.
     RuleRelax_LoadSettings(g_dir);
     RuleRelax_Install();
+
+    // A NaN sound position crashed the client in FMOD's 3D pan (ERROR #132 at
+    // 0x0094BF6B); that channel now pans centre instead. [SoundGuard], ON.
+    SndGuard_LoadSettings(g_dir);
+    SndGuard_Install();
 }
 
 // -------------------------------------------------------- dinput8.dll proxy
