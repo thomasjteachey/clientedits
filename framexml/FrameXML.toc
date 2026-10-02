@@ -153,6 +153,7 @@ CenturionChatFilters.lua
 CenturionWhisper.lua
 CenturionNameTags.lua
 CenturionNameLimits.lua
+CenturionLFDGuard.lua
 
 ## add new modules above here
 LocalizationPost.xml

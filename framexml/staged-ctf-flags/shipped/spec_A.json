@@ -1,0 +1,4 @@
+{"name": "patch-enUS-A", "change": "ctf-flags-portrait", "stage": "/tmp/centmode/uipub/ctf/A", "backup_dir": null,
+ "files": {"Interface\\FrameXML\\WorldStateFrame.lua": "75f0a8a03b3827a4ca8765bd9e06619a",
+           "Interface\\FrameXML\\FrameXML.toc": "9f36f55b33da1e3dfc05b9c9214c65d0",
+           "Interface\\FrameXML\\BPlusPVPPortraitFix.lua": null}}

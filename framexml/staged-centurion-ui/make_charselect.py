@@ -702,10 +702,18 @@ function CharacterRename_UpdateLayout()
 	if ( paired ) then
 		CharacterRenameEditBox:SetPoint("TOP", CharacterRenameText2, "BOTTOM", CENTURION_RENAME_X_PAIRED, CENTURION_RENAME_Y_PAIRED);
 		CharacterRenameEditBox:SetScript("OnTabPressed", function() CharacterRenameSurnameEditBox:SetFocus(); end);
-		-- The list shows "First Last"; offer the Last back.
-		local current = GetCharacterInfo(CharacterSelect.selectedIndex);
-		local surname = type(current) == "string" and strmatch(current, "^%S+%s+(%S+)") or "";
-		CharacterRenameSurnameEditBox:SetText(surname or "");
+		-- Only fill a prompt nobody has typed into yet. This runs on every
+		-- FORCE_RENAME_CHARACTER, which is every attempt to enter the world -
+		-- including ones made while the prompt is already open and half filled
+		-- in. Refilling it there quietly puts the old family name back in the
+		-- box, and that is then what gets sent and applied: the rename looks
+		-- like it silently ignored the new one.
+		if ( CharacterRenameEditBox:GetText() == "" and CharacterRenameSurnameEditBox:GetText() == "" ) then
+			-- The list shows "First Last"; offer the Last back.
+			local current = GetCharacterInfo(CharacterSelect.selectedIndex);
+			local surname = type(current) == "string" and strmatch(current, "^%S+%s+(%S+)") or "";
+			CharacterRenameSurnameEditBox:SetText(surname or "");
+		end
 		CharacterRenameSurnameEditBox:Show();
 	else
 		CharacterRenameEditBox:SetPoint("TOP", CharacterRenameText2, "BOTTOM", 0, CENTURION_RENAME_Y);
@@ -716,7 +724,10 @@ function CharacterRename_UpdateLayout()
 	-- An earlier refusal may have replaced the instructions.
 	CharacterRenameText2:SetText(CHAR_RENAME_INSTRUCTIONS);
 	CharacterRenameText2:SetTextColor(1.0, 0.82, 0.0);
-	CharacterRenameEditBox:SetFocus();
+	-- Focus only a prompt nobody is typing into, for the same reason.
+	if ( CharacterRenameEditBox:GetText() == "" ) then
+		CharacterRenameEditBox:SetFocus();
+	end
 end
 
 -- The prompt is opened from here and nowhere else.

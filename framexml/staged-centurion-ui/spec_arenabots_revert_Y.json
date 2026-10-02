@@ -1,0 +1,10 @@
+{
+  "name": "patch-Y",
+  "change": "arena-bots-back-out-of-bgframe",
+  "stage": "/tmp/centmode/stage-arenabots2/Y",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\PVPBattlegroundFrame.lua": "24c1d5487928770302722ff7adb4853d",
+    "Interface\\FrameXML\\PVPBattlegroundFrame.xml": "1e2484ee2c38e89adf77bcc2272a4f60"
+  }
+}

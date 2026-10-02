@@ -1,0 +1,242 @@
+--- patch-enUS-A/8 WorldStateFrame.lua (75f0a8a0)
++++ fixed
+@@ -106,9 +106,15 @@
+ --   * CWSG addon sync provides physical flag identity/state only.
+ --   * FrameXML draws the stock moving marker position, but replaces only the token.
+ --
+--- Server stock position order is deterministic:
+---   marker 1 = physical Alliance flag carrier, if present
+---   marker 2 = physical Horde flag carrier, if present
++-- Stock position order is deterministic, but the client reverses the packet:
++--   the server writes the physical Alliance flag carrier first and the Horde
++--   flag carrier second (HandleBattlegroundPlayerPositionsOpcode, picker slots
++--   indexed by flag identity), and the client's MSG_BATTLEGROUND_PLAYER_POSITIONS
++--   handler (Wow.exe 0x54B3F0) stores N carriers from slot N-1 down to slot 0.
++--   GetBattlefieldFlagPosition(i) reads slot i-1, so with both flags carried:
++--     marker 1 = physical Horde flag carrier
++--     marker 2 = physical Alliance flag carrier
++--   With one flag carried it is always marker 1, and CWSG says which flag.
+ -- When both flags are carried, this lets us know without proximity guessing.
+ local CENTURION_CTF_BGS = {
+ 	["Warsong Gulch"] = true,
+@@ -217,6 +223,7 @@
+ 		CENTURION_WSG_AUTH.HordeX = nil;
+ 		CENTURION_WSG_AUTH.HordeY = nil;
+ 		CENTURION_WSG_AUTH.HasFull = false;
++		CENTURION_WSG_AUTH.LastSingleSide = nil;
+ 	end
+ end
+ 
+@@ -307,6 +314,20 @@
+ 	end
+ 	if ( BattlefieldMinimap and BattlefieldMinimap:IsShown() and BattlefieldMinimap_UpdateFlags ) then
+ 		BattlefieldMinimap_UpdateFlags();
++	end
++end
++
++-- Remembers which flag was carried alone, so that while a second pickup has not
++-- reached the client's carrier slots the one marker there keeps its flag.
++local function CenturionCTF_NoteSingleCarrier()
++	local aPlayer = CENTURION_WSG_AUTH.AllianceState == "PLAYER";
++	local hPlayer = CENTURION_WSG_AUTH.HordeState == "PLAYER";
++	if ( aPlayer and not hPlayer ) then
++		CENTURION_WSG_AUTH.LastSingleSide = "A";
++	elseif ( hPlayer and not aPlayer ) then
++		CENTURION_WSG_AUTH.LastSingleSide = "H";
++	elseif ( not aPlayer and not hPlayer ) then
++		CENTURION_WSG_AUTH.LastSingleSide = nil;
+ 	end
+ end
+ 
+@@ -332,6 +353,7 @@
+ 	CENTURION_WSG_AUTH.HordeY = CenturionCTF_ParseFloat(parts[9]);
+ 	CENTURION_WSG_AUTH.HasFull = true;
+ 
++	CenturionCTF_NoteSingleCarrier();
+ 	CenturionCTF_RefreshFlagFrames();
+ 	return true;
+ end
+@@ -394,6 +416,7 @@
+ 	end
+ 
+ 	CENTURION_WSG_AUTH.HasFull = true;
++	CenturionCTF_NoteSingleCarrier();
+ 	CenturionCTF_RefreshFlagFrames();
+ 	return true;
+ end
+@@ -510,6 +533,47 @@
+ 	return nil;
+ end
+ 
++-- Which physical flag each stock carrier marker shows: "A", "H" or nil when it
++-- cannot be told. Stock markers come in client slot order (see the note at the
++-- top): with two carriers the first is the Horde flag's, the second the
++-- Alliance flag's. A single marker is whichever flag CWSG says is carried.
++local function CenturionCTF_GetStockSides(stockCount)
++	local sides = {};
++	if ( stockCount >= 2 ) then
++		sides[1] = "H";
++		sides[2] = "A";
++		return sides;
++	end
++	if ( stockCount ~= 1 ) then
++		return sides;
++	end
++
++	if ( CenturionCTF_IsAuthReady() ) then
++		local aPlayer = CENTURION_WSG_AUTH.AllianceState == "PLAYER";
++		local hPlayer = CENTURION_WSG_AUTH.HordeState == "PLAYER";
++		if ( aPlayer and not hPlayer ) then
++			sides[1] = "A";
++			return sides;
++		elseif ( hPlayer and not aPlayer ) then
++			sides[1] = "H";
++			return sides;
++		elseif ( aPlayer and hPlayer and CENTURION_WSG_AUTH.LastSingleSide ) then
++			-- The second pickup has not reached the client's slots yet, so the
++			-- one marker is still the flag that was carried alone before it.
++			sides[1] = CENTURION_WSG_AUTH.LastSingleSide;
++			return sides;
++		end
++	end
++
++	local singleHeldToken = CenturionCTF_GetSingleHeldTokenFromWorldStates();
++	if ( singleHeldToken == "AllianceFlag" ) then
++		sides[1] = "A";
++	elseif ( singleHeldToken == "HordeFlag" ) then
++		sides[1] = "H";
++	end
++	return sides;
++end
++
+ function CenturionWSG_GetFixedTokens(battlefieldFlags)
+ 	local fixed = {};
+ 	if ( not battlefieldFlags or not CenturionCTF_IsActive() ) then
+@@ -522,76 +586,60 @@
+ 			stockCount = stockCount + 1;
+ 		end
+ 	end
+-
+-	-- Authoritative CWSG entries are only used for dropped flags. Their token
+-	-- is already the physical flag identity, so never override it by order.
+-	for i, rawInfo in ipairs(battlefieldFlags) do
+-		if ( rawInfo.authoritative and rawInfo.token ) then
+-			fixed[i] = rawInfo.token;
+-		end
+-	end
+-
+-	-- If both stock carrier markers are present, the stock server packet order is:
+-	--   first stock marker  = physical Alliance flag carrier
+-	--   second stock marker = physical Horde flag carrier
+-	-- This is not proximity guessing. It is the deterministic packet order.
+-	if ( stockCount >= 2 ) then
+-		local seenStock = 0;
+-		for i, rawInfo in ipairs(battlefieldFlags) do
+-			if ( rawInfo.stock ) then
+-				seenStock = seenStock + 1;
+-				if ( seenStock == 1 ) then
+-					fixed[i] = "AllianceFlag";
+-				elseif ( seenStock == 2 ) then
+-					fixed[i] = "HordeFlag";
++	local sides = CenturionCTF_GetStockSides(stockCount);
++
++	-- The client refreshes its carrier slots at most once every 5 seconds
++	-- (Wow.exe 0x54CF60 throttles RequestBattlefieldPositions), but CWSG arrives
++	-- the moment a flag changes hands. A stock marker whose flag CWSG no longer
++	-- has on a player is the old carrier, so it is dropped instead of drawn.
++	local authReady = CenturionCTF_IsAuthReady();
++	local aPlayer = authReady and CENTURION_WSG_AUTH.AllianceState == "PLAYER";
++	local hPlayer = authReady and CENTURION_WSG_AUTH.HordeState == "PLAYER";
++
++	local kept = {};
++	local seenStock = 0;
++	for _, rawInfo in ipairs(battlefieldFlags) do
++		local keep = true;
++		local token = nil;
++		if ( rawInfo.stock ) then
++			seenStock = seenStock + 1;
++			local side = sides[seenStock];
++			if ( authReady ) then
++				if ( side == "A" ) then
++					keep = aPlayer;
++				elseif ( side == "H" ) then
++					keep = hPlayer;
+ 				else
+-					fixed[i] = CenturionCTF_TokenFromPath(rawInfo.token) or rawInfo.token;
++					keep = aPlayer or hPlayer;
+ 				end
+ 			end
+-		end
+-		return fixed;
+-	end
+-
+-	-- If only one stock carrier marker exists, CWSG state tells us which
+-	-- physical flag is currently on a player. Dropped flags, if any, are
+-	-- appended separately as authoritative entries above.
+-	if ( stockCount == 1 ) then
+-		local stockIndex = nil;
+-		for i, rawInfo in ipairs(battlefieldFlags) do
+-			if ( rawInfo.stock ) then
+-				stockIndex = i;
+-				break;
+-			end
+-		end
+-
+-		if ( stockIndex ) then
+-			if ( CenturionCTF_IsAuthReady() ) then
+-				local aPlayer = CENTURION_WSG_AUTH.AllianceState == "PLAYER";
+-				local hPlayer = CENTURION_WSG_AUTH.HordeState == "PLAYER";
+-
+-				if ( aPlayer and not hPlayer ) then
+-					fixed[stockIndex] = "AllianceFlag";
+-					return fixed;
+-				elseif ( hPlayer and not aPlayer ) then
+-					fixed[stockIndex] = "HordeFlag";
+-					return fixed;
+-				end
+-			end
+-
+-			local singleHeldToken = CenturionCTF_GetSingleHeldTokenFromWorldStates();
+-			if ( singleHeldToken ) then
+-				fixed[stockIndex] = singleHeldToken;
+-				return fixed;
+-			end
+-
+-			fixed[stockIndex] = CenturionCTF_TokenFromPath(battlefieldFlags[stockIndex].token) or battlefieldFlags[stockIndex].token;
+-		end
+-
+-		return fixed;
+-	end
+-
+-	-- No stock carrier markers. This is normal when flags are only dropped;
+-	-- authoritative dropped entries already have tokens.
++			if ( side == "A" ) then
++				token = "AllianceFlag";
++			elseif ( side == "H" ) then
++				token = "HordeFlag";
++			else
++				token = CenturionCTF_TokenFromPath(rawInfo.token) or rawInfo.token;
++			end
++		elseif ( rawInfo.authoritative and rawInfo.token ) then
++			-- Authoritative CWSG entries are only used for dropped flags. Their
++			-- token is already the physical flag identity.
++			token = rawInfo.token;
++		end
++		if ( keep ) then
++			table.insert(kept, { info = rawInfo, token = token });
++		end
++	end
++
++	-- The map and minimap read this same list again right after the call, so a
++	-- dropped stock marker is removed from it in place; the dropped-flag markers
++	-- behind it move up into the two flag frames that get drawn.
++	for i = #battlefieldFlags, 1, -1 do
++		battlefieldFlags[i] = nil;
++	end
++	for i, entry in ipairs(kept) do
++		battlefieldFlags[i] = entry.info;
++		fixed[i] = entry.token;
++	end
+ 	return fixed;
+ end
+ 

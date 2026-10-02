@@ -1,0 +1,89 @@
+diff --git a/src/server/game/Battlegrounds/Battleground.cpp b/src/server/game/Battlegrounds/Battleground.cpp
+index cb72573324..c5ddf4e136 100644
+--- a/src/server/game/Battlegrounds/Battleground.cpp
++++ b/src/server/game/Battlegrounds/Battleground.cpp
+@@ -2354,6 +2354,18 @@ bool Battleground::ShouldShowFlagOnMapTo(Player const* viewer, TeamId flagTeam)
+     return flagTeam == viewerTeamId ? m_CustomRules.ShowAllyFlagOnMap : m_CustomRules.ShowEnemyFlagOnMap;
+ }
+ 
++// The 3.3.5 client asks for flag carrier positions only from its map UI, at most once
++// every 5 seconds (Wow.exe 0x54CF60), and is never told when a flag changes hands, so
++// its maps kept showing a flag on the previous carrier. Flag events push fresh
++// positions instead; the client applies MSG_BATTLEGROUND_PLAYER_POSITIONS unasked.
++void Battleground::SendFlagCarrierPositionsToPlayers()
++{
++    for (auto const& entry : GetPlayers())
++        if (Player* player = ObjectAccessor::FindPlayer(entry.first))
++            if (WorldSession* session = player->GetSession())
++                session->SendBattlegroundPlayerPositions();
++}
++
+ bool Battleground::GetNodeObjective(ObjectGuid playerGuid, BattlegroundNodeObjective& objective) const
+ {
+     if (playerGuid.IsEmpty())
+diff --git a/src/server/game/Battlegrounds/Battleground.h b/src/server/game/Battlegrounds/Battleground.h
+index 14b36dfadc..5ecfb853d6 100644
+--- a/src/server/game/Battlegrounds/Battleground.h
++++ b/src/server/game/Battlegrounds/Battleground.h
+@@ -449,6 +449,7 @@ class TC_GAME_API Battleground
+         void SendSpectatorBattlefieldStatusTo(Player* player);
+         bool HasCustomWeatherOverride() const { return m_IsCustomGame && m_CustomRules.Weather != BattlegroundCustomWeather::Normal; }
+         bool ShouldShowFlagOnMapTo(Player const* viewer, TeamId flagTeam) const;
++        void SendFlagCarrierPositionsToPlayers();
+         uint32 GetFlagCaptureLimit(uint32 defaultValue) const { return m_IsCustomGame && m_CustomRules.FlagCaptureLimit ? m_CustomRules.FlagCaptureLimit : defaultValue; }
+         uint32 GetResourceLimit(uint32 defaultValue) const { return m_IsCustomGame && m_CustomRules.ResourceLimit ? m_CustomRules.ResourceLimit : defaultValue; }
+         uint32 GetDeathmatchKillLimit(uint32 defaultValue) const { return m_IsCustomGame && m_CustomRules.DeathmatchKillLimit ? m_CustomRules.DeathmatchKillLimit : defaultValue; }
+diff --git a/src/server/game/Battlegrounds/Zones/BattlegroundTP.cpp b/src/server/game/Battlegrounds/Zones/BattlegroundTP.cpp
+index 68ec89c4fe..20f12f9e0e 100644
+--- a/src/server/game/Battlegrounds/Zones/BattlegroundTP.cpp
++++ b/src/server/game/Battlegrounds/Zones/BattlegroundTP.cpp
+@@ -243,6 +243,8 @@ void BattlegroundTP::SendCTFFlagAddonMessage(std::string const& payload)
+ 
+ void BattlegroundTP::BroadcastCTFFlagFullState()
+ {
++    SendFlagCarrierPositionsToPlayers();
++
+     if (IsCustomGame())
+     {
+         for (auto const& entry : GetPlayers())
+diff --git a/src/server/game/Battlegrounds/Zones/BattlegroundWS.cpp b/src/server/game/Battlegrounds/Zones/BattlegroundWS.cpp
+index ac33389391..96a303d363 100644
+--- a/src/server/game/Battlegrounds/Zones/BattlegroundWS.cpp
++++ b/src/server/game/Battlegrounds/Zones/BattlegroundWS.cpp
+@@ -257,6 +257,8 @@ void BattlegroundWS::SendWSGFlagAddonMessage(std::string const& payload)
+ 
+ void BattlegroundWS::BroadcastWSGFlagFullState()
+ {
++    SendFlagCarrierPositionsToPlayers();
++
+     if (IsCustomGame())
+     {
+         for (auto const& entry : GetPlayers())
+diff --git a/src/server/game/Handlers/BattleGroundHandler.cpp b/src/server/game/Handlers/BattleGroundHandler.cpp
+index 069d2897bf..1d00c93c76 100644
+--- a/src/server/game/Handlers/BattleGroundHandler.cpp
++++ b/src/server/game/Handlers/BattleGroundHandler.cpp
+@@ -346,6 +346,11 @@ void WorldSession::HandleBattlegroundPlayerPositionsOpcode(WorldPacket& /*recvDa
+ {
+     TC_LOG_DEBUG("network", "WORLD: Recvd MSG_BATTLEGROUND_PLAYER_POSITIONS Message");
+ 
++    SendBattlegroundPlayerPositions();
++}
++
++void WorldSession::SendBattlegroundPlayerPositions()
++{
+     Battleground* bg = _player->GetBattleground();
+     if (!bg)                                                 // can't be received if player not in battleground
+         return;
+diff --git a/src/server/game/Server/WorldSession.h b/src/server/game/Server/WorldSession.h
+index f340130ccf..a15998ec93 100644
+--- a/src/server/game/Server/WorldSession.h
++++ b/src/server/game/Server/WorldSession.h
+@@ -1049,6 +1049,7 @@ class TC_GAME_API WorldSession
+         void HandleBattlemasterHelloOpcode(WorldPacket& recvData);
+         void HandleBattlemasterJoinOpcode(WorldPacket& recvData);
+         void HandleBattlegroundPlayerPositionsOpcode(WorldPacket& recvData);
++        void SendBattlegroundPlayerPositions();
+         void HandlePVPLogDataOpcode(WorldPacket& recvData);
+         void HandleBattleFieldPortOpcode(WorldPacket& recvData);
+         void HandleBattlefieldListOpcode(WorldPacket& recvData);

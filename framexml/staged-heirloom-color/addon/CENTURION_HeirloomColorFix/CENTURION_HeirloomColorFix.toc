@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: Centurion HeirloomColorFix
+## Notes: Backfills heirloom (quality 7) color to prevent LootFrame nil errors.
+## Author: ChatGPT
+## Version: 1.0.1
+
+CENTURION_HeirloomColorFix.lua

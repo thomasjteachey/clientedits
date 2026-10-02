@@ -1,0 +1,10 @@
+{
+  "name": "patch-enUS-A",
+  "change": "vh-countdown-chat",
+  "stage": "/tmp/centmode/stage-vhchat/A",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\FrameXML.toc": "97876026e5d5366eccc7d4502833abf8",
+    "Interface\\FrameXML\\CenturionChatFilters.lua": null
+  }
+}

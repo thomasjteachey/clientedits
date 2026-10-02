@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-6",
+  "change": "rename-prefill",
+  "stage": "/tmp/centmode/prefill/stage6",
+  "backup_dir": null,
+  "files": {
+    "Interface\\GlueXML\\CharacterSelect.lua": "aae35502e2bed35f9a0ba2c7b89d272e"
+  }
+}

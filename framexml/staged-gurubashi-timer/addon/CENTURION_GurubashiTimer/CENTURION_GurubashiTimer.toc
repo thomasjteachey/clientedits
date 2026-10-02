@@ -1,0 +1,5 @@
+## Interface: 30300
+## Title: CENTURION Gurubashi Timer
+## Notes: The Gurubashi chest's clock on the Battlegrounds tab.
+## Author: Centurion
+CENTURION_GurubashiTimer.lua

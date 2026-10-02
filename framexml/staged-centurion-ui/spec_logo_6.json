@@ -1,0 +1,11 @@
+{
+  "name": "patch-enUS-6",
+  "change": "centurion-logo",
+  "stage": "/tmp/centmode/logo/stage6",
+  "backup_dir": null,
+  "files": {
+    "Interface\\Glues\\Common\\Glues-WoW-WotLKLogo.blp": null,
+    "Interface\\Glues\\Common\\Glues-WoW-Logo.blp": null,
+    "Interface\\Glues\\Common\\Glues-WoW-BCLogo.blp": null
+  }
+}

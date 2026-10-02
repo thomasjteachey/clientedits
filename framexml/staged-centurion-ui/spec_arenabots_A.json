@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "arena-bots-toggle",
+  "stage": "/tmp/centmode/stage-arenabots2/A",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\ArenaFrame.lua": "2144657bbb4071c59d025a67cab9c974"
+  }
+}
