@@ -1,0 +1,145 @@
+/*-------------------------------------------------------------------------*/
+/* Centurion site overrides
+/*-------------------------------------------------------------------------*/
+/*
+	style.css imports this last, so anything in here wins over the theme
+	without editing theme files. Put site-specific CSS here rather than in
+	overwrite.css or the parts/ files.
+*/
+
+/* Lists inside page content
+/*---------------------------------------------------------------*/
+/*
+	The theme sets a blanket `ul { list-style: none }` so its nav, dropdowns,
+	breadcrumbs and pagination render without markers. That also strips the
+	markers from any list written into page content, which leaves a feature
+	list looking like loose lines of text. Put the markers back, scoped to
+	the page body so none of the chrome is affected.
+*/
+.section-page .page-body ul {
+	list-style: disc outside;
+	padding-left: 2.2rem;
+	margin-bottom: 1.6rem;
+}
+
+.section-page .page-body ul li {
+	margin-bottom: 0.7rem;
+	line-height: 1.6;
+}
+
+.section-page .page-body ul li:last-child {
+	margin-bottom: 0;
+}
+
+.section-page .page-body ul li::marker {
+	color: var(--color-primary);
+}
+
+/* Nested lists step down to a hollow marker */
+.section-page .page-body ul ul {
+	list-style: circle outside;
+	margin-top: 0.7rem;
+	margin-bottom: 0;
+}
+
+/* Ordered lists (the Connect page) keep their numbers, just match the spacing */
+.section-page .page-body ol li {
+	margin-bottom: 0.7rem;
+	line-height: 1.6;
+}
+
+/* Headings inside page content
+/*---------------------------------------------------------------*/
+/*
+	Page bodies are authored as h2 sections. Without this they sit flush
+	against the paragraph above and the page reads as one block.
+*/
+.section-page .page-body h2 {
+	margin-top: 2.8rem;
+	margin-bottom: 1rem;
+}
+
+.section-page .page-body h2:first-child {
+	margin-top: 0;
+}
+
+.section-page .page-body p {
+	margin-bottom: 1.2rem;
+	line-height: 1.6;
+}
+
+/* Centurion logo in the header and footer
+/*---------------------------------------------------------------*/
+/*
+	logo.png is the wide CENTURION wordmark (shield + lettering), so it
+	replaces the icon-plus-text brand: size it by height and hide the
+	server-name text the templates still print beside it.
+*/
+.header .navbar .navbar-brand,
+.footer .footer-brand {
+	flex-shrink: 0;
+}
+
+.header .navbar .navbar-brand img {
+	width: auto;
+	max-width: none;
+	height: 38px;
+}
+
+/* the footer's brand column is narrow: fit the width instead */
+.footer .footer-brand img {
+	width: 100%;
+	max-width: 240px;
+	height: auto;
+}
+
+.header .navbar .navbar-brand span,
+.footer .footer-brand span {
+	display: none !important;
+}
+
+/* Hero art
+/*---------------------------------------------------------------*/
+/*
+	hero-night.jpg: the tauren rogue on the cliff at night, 1672x941 (16:9).
+	Desktop: full width just below the nav bar, its bottom fifth fading into
+	the site's base colour (a gradient layer over the art) so it melts into
+	the page. 56.28vw is the art's height at full width (941 / 1672).
+	Phones: 'cover', anchored left so the tauren stays in frame.
+*/
+.section-wall {
+	background-image: url('../images/graphics/hero-night.jpg?v=1.2');
+	background-position: 22% top;
+	background-color: var(--background-base);
+}
+
+@media screen and (min-width: 992px) {
+	.section-wall {
+		--hero-top: 95px;
+		background-image:
+			linear-gradient(to bottom,
+				transparent 0,
+				transparent calc(var(--hero-top) + 56.28vw * 0.80),
+				var(--background-base) calc(var(--hero-top) + 56.28vw)),
+			url('../images/graphics/hero-night.jpg?v=1.2');
+		background-size: 100% 100%, 100% auto;
+		background-position: 0 0, center var(--hero-top);
+	}
+}
+
+@media screen and (min-width: 1200px) {
+	.section-wall {
+		--hero-top: 122px;
+	}
+}
+
+/* keep the title and tagline crisp over the sky: a hard black shadow.
+   drop-shadow, not text-shadow - the title is gradient-clipped text */
+.section-wall .wall-slider .slider-item .item-title {
+	-webkit-filter: drop-shadow(0 3px 0 #000) drop-shadow(0 0 6px rgba(0, 0, 0, 0.7));
+	filter: drop-shadow(0 3px 0 #000) drop-shadow(0 0 6px rgba(0, 0, 0, 0.7));
+}
+
+.section-wall .wall-slider .slider-item .item-desc {
+	text-shadow: 0 2px 0 #000, 0 0 6px #000;
+}
