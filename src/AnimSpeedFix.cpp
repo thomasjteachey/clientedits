@@ -45,6 +45,7 @@
 #include "goeditor.h"
 #include "gluebridge.h"
 #include "nametag.h"
+#include "rulerelax.h"
 
 #define DEFAULT_LOCK_ANIMS   "119,223"     // StealthWalk, StealthRun
 #define DEFAULT_ATTACK_ANIMS "16,17,18,19,46,49,85,86,87,88,107,117,482"
@@ -497,6 +498,11 @@ static void Install(HMODULE self)
     // writes what it sees to the log.
     NameTag_LoadSettings(g_dir);
     NameTag_Install();
+
+    // Aura-gated waiver of client-side spell rules (the Valra set's "no weapon
+    // requirement"): its own [RuleRelax] section, ON by default keyed on 90217.
+    RuleRelax_LoadSettings(g_dir);
+    RuleRelax_Install();
 }
 
 // -------------------------------------------------------- dinput8.dll proxy

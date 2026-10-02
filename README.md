@@ -11,8 +11,9 @@ Three independent features live in one DLL, because a client can only load one
 | **Vanilla stealth animation** | stealth movement plays at a constant 1.0x instead of speeding up with your movement speed |
 | **Swing fixes** | a spell animation landing on the same frame as a melee swing can no longer destroy it; the client's duplicate "flush" swing ~200 ms later is discarded |
 | **Player collision** | buff-gated player-vs-player collision — players can be made solid to each other |
+| **Glue bridge** | `CenturionGlueRequest(text)` for the character select/create screens: sends text to the server on opcode 0x002, which the stock glue protocol has no packet for (character order, create-time challenge modes). ON by default (`[GlueBridge] Enabled`); see `src/gluebridge.cpp` |
 
-Everything is off or inert unless configured, and every patch site is verified
+Everything else is off or inert unless configured, and every patch site is verified
 against a byte signature at load: on a mismatch the feature disables itself and
 writes a line to `AnimSpeedFix.log` rather than corrupting a different build.
 

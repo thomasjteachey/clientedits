@@ -2050,6 +2050,25 @@ static void __cdecl RemoteRawCommitFilter(void* mv, float* newPos)
     if (dx != odx || dy != ody) {
         newPos[0] = px + dx;
         newPos[1] = py + dy;
+
+        // Same [CMovement+0x4C] prediction-base correction ClipWrapper does, and
+        // for the same reason: the movement target is +0x4C plus delta, so refusing
+        // movement without subtracting it from the base lets the shortfall
+        // accumulate and discharge as a teleport once the obstruction clears.
+        //
+        // This arm was missing it. That made the raw path reproduce, for its own
+        // subset of units, exactly the remote-porting regression the clip arm
+        // documents at the `DO NOT re-add a localMover gate` comment - and it is
+        // PER-UNIT, because a remote only reaches this arm once it has a lingering
+        // [CMovement+0xBC] spline object (see reference_client_movement_integrator).
+        // That is why the porting shows up on a couple of specific units and not
+        // realm-wide: only the ones that have completed a spline on your client.
+        if (g_syncPredicted) {
+            float* pred = (float*)((BYTE*)mv + kOff_Predicted);
+            pred[0] -= (odx - dx);
+            pred[1] -= (ody - dy);
+        }
+
         ++g_cRawClamped;
         if (g_debug >= 2) {
             static DWORD s_l = 0;
@@ -2318,7 +2337,7 @@ void PlayerCollide_LoadSettings(const char* dir)
     // ---- collision exclusions ----
     g_excludeDead = GetPrivateProfileIntA("PlayerCollide", "ExcludeDead", 1, ini);
     g_excludePets = GetPrivateProfileIntA("PlayerCollide", "ExcludePets", 1, ini);
-    GetPrivateProfileStringA("PlayerCollide", "ExcludeAuras", "8326", buf, sizeof(buf), ini);
+    GetPrivateProfileStringA("PlayerCollide", "ExcludeAuras", "8326,90218", buf, sizeof(buf), ini);
     g_excludeAuraCount = 0;
     for (char* p = buf; *p && g_excludeAuraCount < 8; ) {
         while (*p == ' ' || *p == ',') ++p;

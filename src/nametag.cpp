@@ -93,6 +93,20 @@ static const BYTE  kCVarLookupSig[] = {
 typedef void* (__cdecl* CVarLookup_t)(const char* name);
 static int g_lookupOk = 0;
 
+// WHERE the CVar is registered. The name tag alone is not enough: it only runs
+// once some name is on screen, and with nobody's name showing (own name is off
+// by default) the CVar never existed and the Interface checkbox stayed grey.
+// So it is also registered when the world UI's Lua functions are - the loop at
+// 0x00512109 walks the 310-entry table at 0x00AC80B0 (GetCVar among them), and
+// ends with this call, which runs on every world load and every /reload,
+// before FrameXML is read:
+//     0x00512131  call 0x0055DC90        E8 5A BB 04 00
+// It is redirected through a stub that registers the CVar and then tail-jumps
+// to the original callee, so the return address is still 0x00512136.
+static const DWORD kWorldLuaSite   = 0x00512131;
+static const BYTE  kWorldLuaSig[]  = { 0xE8, 0x5A, 0xBB, 0x04, 0x00 };
+static DWORD       g_worldLuaNext  = 0x0055DC90;
+
 // STAGE 2 - the marker line. Inside 0x007E5640's dirty block:
 //
 //     0x007E5754  call edx              ; [unitVtable+0xCC](mask, buf, 0x400)
@@ -351,6 +365,28 @@ static void RegisterCVar()
                      (void*)kCVarThunkSite,     // -> CVarChanged, see kCVarThunkSite
                      4, 0, 1, 0);
     Log("registered centurionNameTags (cvar=%p, default %d)", cvar, g_defaultOn);
+}
+
+// The world UI's Lua is being built: (re)register the CVar now, so it is
+// there before FrameXML - and the options checkbox - looks for it.
+extern "C" void __cdecl NameTagWorldLuaReady()
+{
+    g_cvarRegistered = 0;
+    RegisterCVar();
+    if (g_lookupOk)
+        Log("world Lua ready: centurionNameTags %s", ((CVarLookup_t)kCVarLookup)("centurionNameTags") ? "present" : "MISSING");
+}
+
+__declspec(naked) static void WorldLuaStub()
+{
+    __asm {
+        pushad
+        pushfd
+        call NameTagWorldLuaReady
+        popfd
+        popad
+        jmp  [g_worldLuaNext]
+    }
 }
 
 bool NameTag_Enabled()
@@ -634,6 +670,20 @@ void NameTag_Install()
     if (VerifySig(kCVarThunkSite, kCVarThunkSig, sizeof(kCVarThunkSig), "CVar callback padding") &&
         WriteJump(kCVarThunkSite, (void*)&CVarChanged, sizeof(kCVarThunkSig)))
         g_thunkReady = 1;
+
+    // The world-UI registration point. A call, not a jmp: the stub returns to
+    // 0x00512136 through the original callee.
+    if (g_thunkReady && VerifySig(kWorldLuaSite, kWorldLuaSig, sizeof(kWorldLuaSig), "world Lua registration")) {
+        DWORD old = 0;
+        if (VirtualProtect((void*)kWorldLuaSite, 5, PAGE_EXECUTE_READWRITE, &old)) {
+            BYTE* p = (BYTE*)kWorldLuaSite;
+            *(DWORD*)(p + 1) = (DWORD)&WorldLuaStub - (kWorldLuaSite + 5);
+            DWORD ignored = 0;
+            VirtualProtect((void*)kWorldLuaSite, 5, old, &ignored);
+            FlushInstructionCache(GetCurrentProcess(), (void*)kWorldLuaSite, 5);
+            Log("CVar registration hooked at 0x%08X", kWorldLuaSite);
+        }
+    }
 
     if (!WriteJump(kNameTagSite, (void*)&NameTagHook, kStolen)) {
         Log("could not write the name tag hook - disabled");
