@@ -17,3 +17,12 @@ dist/
 # Runtime logs written next to the client
 AnimSpeedFix*.log
 AnimTrace*.csv
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Fonts copied out of the client for rendering previews. FRIZQT__.TTF is the
+# licensed Friz Quadrata that ships with WoW; this repo is public.
+*.ttf
+*.TTF
