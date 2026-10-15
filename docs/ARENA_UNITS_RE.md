@@ -23,6 +23,21 @@ packet plus each player's own descriptor.
   and fires `ARENA_OPPONENT_UPDATE(unit, "seen")` (event 0x26A via `0x81B530`),
   or `"unseen"` (`0xA0C39C`) when the object is not in the object manager.
 - **`0x54B920`** — the pet counterpart (`arenapet%d`).
+- **`0x54AD10 (WGUID*)`** — the `SMSG_ARENA_UNIT_DESTROYED` handler (routed from
+  the packet handler at `0x54B5F2`): finds the GUID in the announced slots
+  (`0xBE9F48`, then the pets) and fires `ARENA_OPPONENT_UPDATE(unit,
+  "destroyed")` (`0xA0C3C4`, pushed at `0x54ADC3`/`0x54ADE2`/`0x54AE1E`).
+  `"cleared"` (`0xA0C510`) is pushed at `0x54CBC6`/`0x54CBEF`.
+
+**Stealth is "destroyed", not "unseen" (2026-10-15).** TrinityCore's
+`Object::DestroyForPlayer` sends `SMSG_ARENA_UNIT_DESTROYED` ahead of
+`SMSG_DESTROY_OBJECT` whenever an arena unit leaves a player's sight, which is
+what stealth and invisibility do. Stock Blizzard_ArenaUI handles "destroyed"
+like "seen" (unlock, redraw from a unit that is gone), so its health bar reads 0
+and shows DEAD. `"unseen"` only comes from `0x54B840`, for a slot assigned to a
+player who is already out of the object manager. The fix is FrameXML
+(`CenturionArenaStealth.lua`): remember whether each arenaN was last seen dead
+(UNIT_HEALTH), and on destroyed/unseen show "Stealthed" unless it was.
 
 ## When a player becomes an opponent
 
