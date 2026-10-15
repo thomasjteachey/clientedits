@@ -215,7 +215,9 @@ static const SquadTint kDefaultSquadTint[4] = {
     { 92321, 0xB84DFF },    // Purple Team
 };
 static SquadTint g_squadTint[4];
-static int g_tintPercent = 40;      // [NameTag] SquadTint: how far towards the squad colour, 0 = off
+// How far towards the squad colour, in percent: 40 read as too subtle in game.
+static const int kDefaultTintPercent = 65;
+static int g_tintPercent = kDefaultTintPercent;   // [NameTag] SquadTint, 0 = off
 
 // The tint marks the OTHER squads: your own keeps the friendly green every
 // ally's name has elsewhere. Who you are comes from the active player's guid,
@@ -823,7 +825,7 @@ void NameTag_LoadSettings(const char* dir)
     // The squad tint. SquadAuras and SquadColours are four comma-separated
     // values each, in squad order (Gold, Green, Blue, Purple); the colours are
     // RRGGBB hex. Anything left out keeps its default.
-    g_tintPercent = GetPrivateProfileIntA("NameTag", "SquadTint", 40, ini);
+    g_tintPercent = GetPrivateProfileIntA("NameTag", "SquadTint", kDefaultTintPercent, ini);
     if (g_tintPercent < 0)   g_tintPercent = 0;
     if (g_tintPercent > 100) g_tintPercent = 100;
     memcpy(g_squadTint, kDefaultSquadTint, sizeof(g_squadTint));

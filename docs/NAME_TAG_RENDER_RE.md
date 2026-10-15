@@ -200,7 +200,7 @@ An aura landing does not dirty a tag, so the pre-hook keeps the squad each tag
 was coloured for (`BuiltMark::tint`) and sets bits 1|2 when it changes (both,
 since a marker tag built with colour codes on is not one to recolour without a
 relayout). Settings: `[NameTag] SquadTint` (percent towards the squad colour,
-default 40, 0 = off), `SquadAuras`, `SquadColours` (RRGGBB hex, squad order).
+default 65 since client-tweaks 1.00022 - 40 was too subtle - 0 = off), `SquadAuras`, `SquadColours` (RRGGBB hex, squad order).
 
 The World / Tournament / Bot marker word is drawn in the squad's **full**
 colour in a squad match (client-tweaks 1.00020). The squad rides in the
