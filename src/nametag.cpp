@@ -181,8 +181,8 @@ static DWORD g_markerResume = kMarkerResume;
 // THE SQUAD TINT. In a multi-team arena (Baradin Hold: Four Corners) every
 // player carries their squad's flag, and those four flags are handed out only
 // there - the Gold and Green squads get their own copies of the stock pair - so
-// a name leans towards its squad's colour without the two-sided arenas
-// changing at all. It is a lean, not a recolour: hostile names stay reddish,
+// an enemy's name leans towards its squad's colour without the two-sided
+// arenas changing at all (your own squad keeps the normal friendly colour). It is a lean, not a recolour: hostile names stay reddish,
 // friendly ones stay friendly, and none of them becomes the plain blue a
 // friendly player's name already means. The World / Tournament / Bot word
 // above the name is the one thing drawn in the squad's full colour there
@@ -216,6 +216,14 @@ static const SquadTint kDefaultSquadTint[4] = {
 };
 static SquadTint g_squadTint[4];
 static int g_tintPercent = 40;      // [NameTag] SquadTint: how far towards the squad colour, 0 = off
+
+// The tint marks the OTHER squads: your own keeps the friendly green every
+// ally's name has elsewhere. Who you are comes from the active player's guid,
+// cdecl () -> u64 in edx:eax, the call playercollide.cpp makes every frame.
+static const DWORD kGetActiveGuid  = 0x004D3790;
+static const BYTE  kGetActiveSig[] = { 0x64, 0x8B, 0x0D, 0x2C, 0x00, 0x00, 0x00, 0xA1 };
+typedef unsigned __int64 (__cdecl* GetActiveGuid_t)();
+static int g_activeOk = 0;
 
 // THE COLOUR. The tag builds its font string with flags 0xC8, pushed as an
 // immediate at 0x007E57A6 (`push 0xC8`, 68 C8 00 00 00). Bit 0x08 makes the
@@ -674,6 +682,18 @@ static int SquadOf(void* unit)
     return 0;
 }
 
+// The squad the player at the keyboard carries the flag of, 0 if none.
+static int MySquad()
+{
+    if (!g_activeOk)
+        return 0;
+    unsigned __int64 const guid = ((GetActiveGuid_t)kGetActiveGuid)();
+    if (!guid)
+        return 0;
+    void* me = ((ObjectPtr_t)kObjectPtr)((DWORD)guid, (DWORD)(guid >> 32), 1, "nametag.cpp", 0);
+    return me ? SquadOf(me) : 0;
+}
+
 static int WantedTint(void* tag, void* unit)
 {
     if (g_tintPercent <= 0 || !unit || !Readable(tag, 0x20))
@@ -681,7 +701,10 @@ static int WantedTint(void* tag, void* unit)
     // Players only, as for the marker.
     if (*(DWORD*)((BYTE*)tag + 0x14) & 0xFFFF0000)
         return 0;
-    return SquadOf(unit);
+    // Allies are not tinted. Until your own flag lands MySquad() is 0 and they
+    // are; the pre-hook rebuilds them once it does, as for any tint change.
+    int const squad = SquadOf(unit);
+    return squad && squad != MySquad() ? squad : 0;
 }
 
 // Each of R, G and B moved g_tintPercent of the way to the squad's; alpha kept.
@@ -883,6 +906,7 @@ void NameTag_Install()
 
     // The squad tint is its own hook too, and leans on the probe above to
     // re-dirty a tag whose squad flag arrived after it was built.
+    g_activeOk = VerifySig(kGetActiveGuid, kGetActiveSig, sizeof(kGetActiveSig), "GetActivePlayerGuid");
     if (g_tintPercent > 0 &&
         VerifySig(kColourSite, kColourSig, sizeof(kColourSig), "name tag colour") &&
         WriteJump(kColourSite, (void*)&ColourHook, kColourStolen)) {

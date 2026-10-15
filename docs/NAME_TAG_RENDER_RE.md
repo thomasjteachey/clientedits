@@ -163,8 +163,10 @@ tag). Confirmed in game: the marker takes its own colour, centred over the name.
 
 ## 5.5 The squad tint (2026-10-15)
 
-In a multi-team arena (Baradin Hold: Four Corners, BG 887) a name leans
-towards its squad's colour. The squad is read off the flag aura the player
+In a multi-team arena (Baradin Hold: Four Corners, BG 887) an enemy's name
+leans towards its squad's colour; your own squad keeps the normal friendly
+green (owner's call, client-tweaks 1.00021: the viewer's squad is read off the
+active player, `0x004D3790` GetActivePlayerGuid + ObjectPtr). The squad is read off the flag aura the player
 carries - 92322 Gold, 92323 Green, 92320 Blue, 92321 Purple, all handed out
 only in a squad match (the Gold and Green squads carry copies of the stock
 32724/32725, so two-sided arenas are untouched).
