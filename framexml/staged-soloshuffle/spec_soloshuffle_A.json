@@ -1,0 +1,10 @@
+{
+  "name": "patch-enUS-A",
+  "change": "solo-shuffle",
+  "stage": "/tmp/centmode/stage-soloshuffle/A",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\ArenaFrame.lua": "eeaa45bbf39c6e81efe9991ae1d77e0a",
+    "DBFilesClient\\BattlemasterList.dbc": "ef63f3da82c8227f1858a6174614dd29"
+  }
+}
