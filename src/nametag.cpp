@@ -219,6 +219,21 @@ static SquadTint g_squadTint[4];
 static const int kDefaultTintPercent = 65;
 static int g_tintPercent = kDefaultTintPercent;   // [NameTag] SquadTint, 0 = off
 
+// THE LOBBY TINT. In a custom game lobby every member wears one of three auras
+// (custom_game_lobby.cpp on the realm): the Blue team's flag, the Red team's,
+// or - on neither team, so spectating once the match starts - a hidden marker.
+// Those names are drawn in that colour outright, not leaned: blue, red and
+// grey, the same for everyone looking, yourself included. The flags are worn
+// nowhere but the lobby, so nothing outside it changes. Tint keys 5..7.
+static const SquadTint kDefaultLobbyTint[3] = {
+    { 32609, 0x3399FF },    // Blue team (Alliance Flag Visual)
+    { 32610, 0xFF3333 },    // Red team (Horde Flag Visual)
+    { 92324, 0x9D9D9D },    // spectating (Lobby Spectator)
+};
+static SquadTint g_lobbyTint[3];
+static int g_lobbyTintOn = 1;                     // [NameTag] LobbyTint, 0 = off
+static const int kLobbyKey = 5;                   // the first lobby tint key
+
 // The tint marks the OTHER squads: your own keeps the friendly green every
 // ally's name has elsewhere. Who you are comes from the active player's guid,
 // cdecl () -> u64 in edx:eax, the call playercollide.cpp makes every frame.
@@ -696,17 +711,36 @@ static int MySquad()
     return me ? SquadOf(me) : 0;
 }
 
+// 1..3 = the lobby aura the unit wears (Blue, Red, spectating), 0 = none.
+static int LobbyOf(void* unit)
+{
+    for (int l = 0; l < 3; ++l)
+        if (AnyAura(unit, g_lobbyTint[l].aura))
+            return l + 1;
+    return 0;
+}
+
 static int WantedTint(void* tag, void* unit)
 {
-    if (g_tintPercent <= 0 || !unit || !Readable(tag, 0x20))
+    if (!unit || !Readable(tag, 0x20))
         return 0;
     // Players only, as for the marker.
     if (*(DWORD*)((BYTE*)tag + 0x14) & 0xFFFF0000)
         return 0;
-    // Allies are not tinted. Until your own flag lands MySquad() is 0 and they
-    // are; the pre-hook rebuilds them once it does, as for any tint change.
-    int const squad = SquadOf(unit);
-    return squad && squad != MySquad() ? squad : 0;
+    if (g_tintPercent > 0) {
+        // Allies are not tinted. Until your own flag lands MySquad() is 0 and
+        // they are; the pre-hook rebuilds them once it does, as for any tint
+        // change.
+        int const squad = SquadOf(unit);
+        if (squad)
+            return squad != MySquad() ? squad : 0;
+    }
+    if (g_lobbyTintOn) {
+        int const lobby = LobbyOf(unit);
+        if (lobby)
+            return kLobbyKey + lobby - 1;
+    }
+    return 0;
 }
 
 // Each of R, G and B moved g_tintPercent of the way to the squad's; alpha kept.
@@ -733,10 +767,14 @@ extern "C" void __cdecl NameTagColour(void* tag, void* unit)
 
     DWORD* colour = (DWORD*)((BYTE*)tag + 0x0C);
     DWORD const was = *colour;
-    *colour = Tinted(was, g_squadTint[tint - 1].rgb);
+    if (tint >= kLobbyKey)
+        *colour = (was & 0xFF000000) | (g_lobbyTint[tint - kLobbyKey].rgb & 0xFFFFFF);
+    else
+        *colour = Tinted(was, g_squadTint[tint - 1].rgb);
     if (g_colourLogged < 4) {
         ++g_colourLogged;
-        Log("tint: squad %d, colour %08X -> %08X", tint, was, *colour);
+        Log("tint: %s %d, colour %08X -> %08X", tint >= kLobbyKey ? "lobby" : "squad",
+            tint >= kLobbyKey ? tint - kLobbyKey + 1 : tint, was, *colour);
     }
 }
 
@@ -849,6 +887,29 @@ void NameTag_LoadSettings(const char* dir)
         p = end;
         while (*p == ',' || *p == ' ') ++p;
     }
+
+    // The lobby tint: LobbyAuras / LobbyColours are three values each, in the
+    // order Blue, Red, spectating, read the same way.
+    g_lobbyTintOn = GetPrivateProfileIntA("NameTag", "LobbyTint", 1, ini);
+    memcpy(g_lobbyTint, kDefaultLobbyTint, sizeof(g_lobbyTint));
+    GetPrivateProfileStringA("NameTag", "LobbyAuras", "", list, sizeof(list), ini);
+    p = list;
+    for (int l = 0; l < 3 && *p; ++l) {
+        char* end = NULL;
+        unsigned long v = strtoul(p, &end, 10);
+        if (end != p) g_lobbyTint[l].aura = (DWORD)v;
+        p = end;
+        while (*p == ',' || *p == ' ') ++p;
+    }
+    GetPrivateProfileStringA("NameTag", "LobbyColours", "", list, sizeof(list), ini);
+    p = list;
+    for (int l = 0; l < 3 && *p; ++l) {
+        char* end = NULL;
+        unsigned long v = strtoul(p, &end, 16);
+        if (end != p) g_lobbyTint[l].rgb = (DWORD)v & 0xFFFFFF;
+        p = end;
+        while (*p == ',' || *p == ' ') ++p;
+    }
 }
 
 void NameTag_Install()
@@ -909,12 +970,15 @@ void NameTag_Install()
     // The squad tint is its own hook too, and leans on the probe above to
     // re-dirty a tag whose squad flag arrived after it was built.
     g_activeOk = VerifySig(kGetActiveGuid, kGetActiveSig, sizeof(kGetActiveSig), "GetActivePlayerGuid");
-    if (g_tintPercent > 0 &&
+    if ((g_tintPercent > 0 || g_lobbyTintOn) &&
         VerifySig(kColourSite, kColourSig, sizeof(kColourSig), "name tag colour") &&
         WriteJump(kColourSite, (void*)&ColourHook, kColourStolen)) {
         g_colourHooked = 1;
         Log("squad tint installed at 0x%08X (%d%%; %u=%06X %u=%06X %u=%06X %u=%06X)", kColourSite, g_tintPercent,
             g_squadTint[0].aura, g_squadTint[0].rgb, g_squadTint[1].aura, g_squadTint[1].rgb,
             g_squadTint[2].aura, g_squadTint[2].rgb, g_squadTint[3].aura, g_squadTint[3].rgb);
+        Log("lobby tint %s (%u=%06X %u=%06X %u=%06X)", g_lobbyTintOn ? "on" : "off",
+            g_lobbyTint[0].aura, g_lobbyTint[0].rgb, g_lobbyTint[1].aura, g_lobbyTint[1].rgb,
+            g_lobbyTint[2].aura, g_lobbyTint[2].rgb);
     }
 }
