@@ -22,7 +22,9 @@
 -- Blizzard_ArenaUI.xml lays them out (patch-enUS-2). What is new is how they
 -- are grouped: one column per enemy squad under its name in its colour, since
 -- fifteen of them stacked would not fit the screen, and the block shrinks for
--- squads of four (90%) and five (80%). Health and mana text obey
+-- squads of four (90%) and five (80%). With only two teams (Solo Shuffle feeds
+-- these too, since arena1-5 cannot follow its re-dealt rounds) there is one
+-- enemy column and no header, exactly as the stock frames look. Health and mana text obey
 -- the party status-text option, as the stock bars do, and show on mouseover;
 -- "Dead", "Stealthed" and "Away" always show. Left click targets, right click
 -- focuses. The stock frames are put away for the match. On the scoreboard
@@ -321,18 +323,31 @@ function CenturionSquadFrames_Layout()
 		return;
 	end
 
+	-- Two teams (a Solo Shuffle round) leave one enemy column, which is drawn
+	-- the way the stock frames are: no team header over it.
+	local headerH = state.count > 2 and HEADER_H or 0;
+
 	local column, tallest, largest = 0, 0, 0;
 	for squad = 0, MAX_SQUADS - 1 do
 		local group = groups[squad];
 		local roster = state.roster[squad];
 		if ( squad ~= state.mine and squad < state.count and roster and #roster > 0 ) then
-			local height = HEADER_H + #roster * (FRAME_H + FRAME_GAP) - FRAME_GAP;
+			local height = headerH + #roster * (FRAME_H + FRAME_GAP) - FRAME_GAP;
 			group:ClearAllPoints();
 			group:SetPoint("TOPRIGHT", container, "TOPRIGHT", -column * (FRAME_W + COLUMN_GAP), 0);
 			group:SetHeight(height);
+			if ( headerH > 0 ) then
+				group.header:Show();
+				group.count:Show();
+			else
+				group.header:Hide();
+				group.count:Hide();
+			end
 			for index = 1, MAX_MEMBERS do
 				local frame = group.rows[index];
 				local member = roster[index];
+				frame:ClearAllPoints();
+				frame:SetPoint("TOPLEFT", group, "TOPLEFT", 0, -(headerH + (index - 1) * (FRAME_H + FRAME_GAP)));
 				if ( member ) then
 					frame:SetAttribute("macrotext1", "/targetexact "..member.name);
 					frame:SetAttribute("macrotext2", "/focus "..member.name);

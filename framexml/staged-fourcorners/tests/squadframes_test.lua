@@ -209,6 +209,21 @@ ArenaEnemyFrames = obj("Frame", "ArenaEnemyFrames"); ArenaEnemyFrames.parent = U
 fire("ADDON_LOADED", "Blizzard_ArenaUI")
 check(ArenaEnemyFrames.parent ~= UIParent, "late-loaded stock frames put away")
 
+-- two teams (Solo Shuffle): one enemy column, no header, frames from the top
+line("SQ:-")
+line("SQ:0:2")
+line("SQR:0::Me,4;Kilo,5;Lima,8")
+line("SQR:1::Mike,1;November,2;Oscar,3")
+check(group(1).shown and not group(0).shown, "two teams: the enemy column only")
+check(group(1).header.shown == false and group(1).count.shown == false, "two teams: no team header")
+check(row(1, 1).point[5] == 0 and row(1, 2).point[5] == -40, "two teams: frames start at the top: " .. tostring(row(1, 1).point[5]))
+check(group(1).height == 3 * 40 - 8, "two teams: column height without a header: " .. tostring(group(1).height))
+-- and back to four: headers return
+line("SQ:-")
+line("SQ:0:4")
+line("SQR:2::Papa,1")
+check(group(2).header.shown == true and row(2, 1).point[5] == -16, "four teams: header back, frames under it")
+
 -- outside an arena the frames clear themselves
 instanceType = "none"
 fire("PLAYER_ENTERING_WORLD")
