@@ -161,6 +161,45 @@ so a name can recolour through 0x006C6C30 without a relayout. A marked tag is
 built with **0xC0** instead (the pushed immediate at 0x007E57A7 is rewritten per
 tag). Confirmed in game: the marker takes its own colour, centred over the name.
 
+## 5.5 The squad tint (2026-10-15)
+
+In a multi-team arena (Baradin Hold: Four Corners, BG 887) a name leans
+towards its squad's colour. The squad is read off the flag aura the player
+carries - 92322 Gold, 92323 Green, 92320 Blue, 92321 Purple, all handed out
+only in a squad match (the Gold and Green squads carry copies of the stock
+32724/32725, so two-sided arenas are untouched).
+
+**The one place the colour is made** is the dirty block's
+`[vtable+0x78](&tag+0x0C)`:
+
+    0x007E56C0  test al, 2           ; colour dirty?
+    0x007E56C4  and eax, ~2 / mov [esi+0x18], eax
+    0x007E56CF  lea edi, [esi+0xC]
+    0x007E56D5  call edx             ; [vtable+0x78](&tag+0x0C) = 0x00718AC0
+    0x007E56D7  mov eax, [esi+8]     ; <- hooked here (5 bytes, relocation-free)
+    0x007E56DA  test eax, eax
+    0x007E56DC  je 0x007E56EE
+    0x007E56DE  test byte [esi+0x18], 1 / jne     ; text dirty too -> rebuilt below
+    0x007E56E6  call 0x006BD070(str, &colour)     ; colour only: recolour in place
+
+and 0x006BE2B0 (the rebuild) is handed `lea eax, [esi+0xC]` at 0x007E578A.
+Both uses read tag+0x0C after the hook, so blending it in place there covers
+a recolour and a rebuild alike. `ebx` = the unit, `esi` = the tag throughout.
+
+**Colour format - VERIFIED: ARGB dword (0xAARRGGBB), bytes B,G,R,A.**
+0x00718AC0 writes either the fixed `[0x00ADAA98]` = 0xFFFF0000 (when
+`unit+0xA30 & 0x10`) or the reaction colour from 0x00521BF0, whose table at
+0x00BD0C94 is built byte by byte as `00 00 FF FF` (hated), `00 00 FF FF`
+(hostile), `00 80 FF FF` (unfriendly), `00 FF FF FF` (neutral), `00 FF 00 FF`
+(friendly) - red, red, orange FF8000, yellow, green only when read as
+B,G,R,A.
+
+An aura landing does not dirty a tag, so the pre-hook keeps the squad each tag
+was coloured for (`BuiltMark::tint`) and sets bits 1|2 when it changes (both,
+since a marker tag built with colour codes on is not one to recolour without a
+relayout). Settings: `[NameTag] SquadTint` (percent towards the squad colour,
+default 40, 0 = off), `SquadAuras`, `SquadColours` (RRGGBB hex, squad order).
+
 ## 6. Earlier plan (superseded by section 5)
 
 

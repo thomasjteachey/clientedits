@@ -41,6 +41,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nametag.h"
@@ -150,7 +151,7 @@ static DWORD g_auraFor[4] = { 0, 92010, 92011, 92012 };
 // a flip of the CVar, would never show. The pre-hook compares this with what
 // the tag should carry now and sets the tag's dirty bits (text 1, colour 2 at
 // tag+0x18, see 0x007E56C0 / 0x007E56F8) when they differ.
-struct BuiltMark { void* tag; int mark; };
+struct BuiltMark { void* tag; int mark; int tint; };
 static BuiltMark g_built[1024];
 
 static BuiltMark* BuiltSlot(void* tag, bool claim)
@@ -176,6 +177,43 @@ static BuiltMark* BuiltSlot(void* tag, bool claim)
 static int  g_markerHooked = 0;
 static int  g_markerLogged = 0;
 static DWORD g_markerResume = kMarkerResume;
+
+// THE SQUAD TINT. In a multi-team arena (Baradin Hold: Four Corners) every
+// player carries their squad's flag, and those four flags are handed out only
+// there - the Gold and Green squads get their own copies of the stock pair - so
+// a name leans towards its squad's colour without the two-sided arenas
+// changing at all. It is a lean, not a recolour: hostile names stay reddish,
+// friendly ones stay friendly, and none of them becomes the plain blue a
+// friendly player's name already means.
+//
+// The name colour is one ARGB dword that [unitVtable+0x78] writes to tag+0x0C,
+// in the dirty block, before either use of it:
+//
+//     0x007E56D5  call edx              ; [vtable+0x78](&tag+0x0C)
+//     0x007E56D7  mov eax, [esi+8]      ; the tag's font string
+//     0x007E56DA  test eax, eax
+//     0x007E56DC  je 0x007E56EE
+//
+// After it the colour either recolours the existing string (0x006BD070, when
+// only the colour is dirty) or goes into a new one (0x006BE2B0 takes &tag+0x0C),
+// so blending it in place right here covers both. The five bytes at 0x007E56D7
+// are relocation-free; the je reads the flags of the replayed test.
+static const DWORD kColourSite   = 0x007E56D7;
+static const BYTE  kColourSig[]  = { 0x8B, 0x46, 0x08, 0x85, 0xC0, 0x74, 0x10 };
+static const size_t kColourStolen = 5;
+static DWORD g_colourResume = 0x007E56DC;
+static int   g_colourHooked = 0;
+static int   g_colourLogged = 0;
+
+struct SquadTint { DWORD aura; DWORD rgb; };
+static const SquadTint kDefaultSquadTint[4] = {
+    { 92322, 0xFFC800 },    // Gold Team
+    { 92323, 0x33E14D },    // Green Team
+    { 92320, 0x2EA8FF },    // Blue Team
+    { 92321, 0xB84DFF },    // Purple Team
+};
+static SquadTint g_squadTint[4];
+static int g_tintPercent = 40;      // [NameTag] SquadTint: how far towards the squad colour, 0 = off
 
 // THE COLOUR. The tag builds its font string with flags 0xC8, pushed as an
 // immediate at 0x007E57A6 (`push 0xC8`, 68 C8 00 00 00). Bit 0x08 makes the
@@ -407,8 +445,9 @@ bool NameTag_Enabled()
 // into the game from there failed the whole process with 0xC0000142
 // (STATUS_DLL_INIT_FAILED) before a window ever opened. By the time a name tag
 // is drawn the game is fully up and this is its own main thread.
-// Defined with the marker, further down.
+// Defined with the marker and the tint, further down.
 static int WantedMarker(void* tag, void* unit);
+static int WantedTint(void* tag, void* unit);
 
 extern "C" void __cdecl NameTagProbe(void* tag)
 {
@@ -416,14 +455,17 @@ extern "C" void __cdecl NameTagProbe(void* tag)
 
     if (!Readable(tag, 0x20)) return;
 
-    if (g_markerHooked) {
+    if (g_markerHooked || g_colourHooked) {
         DWORD lo = *(DWORD*)((BYTE*)tag + 0x10);
         DWORD hi = *(DWORD*)((BYTE*)tag + 0x14);
         if ((lo || hi) && !(hi & 0xFFFF0000)) {
             void* u = ((ObjectPtr_t)kObjectPtr)(lo, hi, 1, "nametag.cpp", 0);
-            int const want = WantedMarker(tag, u);
             BuiltMark* b = BuiltSlot(tag, false);
-            if ((b ? b->mark : MARK_NONE) != want)
+            // Both bits for a tint too, not just colour: a tag built with
+            // colour codes on (a marker) is not one the client recolours
+            // without laying it out again.
+            if ((g_markerHooked && (b ? b->mark : MARK_NONE) != WantedMarker(tag, u)) ||
+                (g_colourHooked && (b ? b->tint : 0) != WantedTint(tag, u)))
                 *(DWORD*)((BYTE*)tag + 0x18) |= 3;
         }
     }
@@ -587,6 +629,93 @@ extern "C" int __cdecl NameTagMarker(void* tag, void* unit, char* buf, int lines
     return lines + 1;
 }
 
+// ------------------------------------------------------------------ the tint
+
+// 1..4 = the squad whose flag the unit carries, 0 = none. One pass over the
+// auras for all four flags.
+static int SquadOf(void* unit)
+{
+    BYTE* u = (BYTE*)unit;
+    if (!Readable(u + kAuraInline, kAuraInlineCount - kAuraInline + 4))
+        return 0;
+
+    DWORD count = *(DWORD*)(u + kAuraInlineCount);
+    BYTE* entries = u + kAuraInline;
+    if (count == 0xFFFFFFFF) {
+        count = *(DWORD*)(u + kAuraHeapCount);
+        entries = *(BYTE**)(u + kAuraHeapPtr);
+    }
+    if (!entries || count > 255 || !Readable(entries, count * kAuraStride))
+        return 0;
+
+    for (DWORD i = 0; i < count; ++i) {
+        DWORD const spell = *(DWORD*)(entries + i * kAuraStride + kAuraSpell);
+        for (int s = 0; s < 4; ++s)
+            if (spell && spell == g_squadTint[s].aura)
+                return s + 1;
+    }
+    return 0;
+}
+
+static int WantedTint(void* tag, void* unit)
+{
+    if (g_tintPercent <= 0 || !unit || !Readable(tag, 0x20))
+        return 0;
+    // Players only, as for the marker.
+    if (*(DWORD*)((BYTE*)tag + 0x14) & 0xFFFF0000)
+        return 0;
+    return SquadOf(unit);
+}
+
+// Each of R, G and B moved g_tintPercent of the way to the squad's; alpha kept.
+static DWORD Tinted(DWORD argb, DWORD rgb)
+{
+    DWORD out = argb & 0xFF000000;
+    for (int shift = 0; shift <= 16; shift += 8) {
+        int const from = (argb >> shift) & 0xFF;
+        int const to   = (rgb >> shift) & 0xFF;
+        out |= (DWORD)(from + (to - from) * g_tintPercent / 100) << shift;
+    }
+    return out;
+}
+
+extern "C" void __cdecl NameTagColour(void* tag, void* unit)
+{
+    if (!Readable(tag, 0x20))
+        return;
+    int const tint = WantedTint(tag, unit);
+    if (BuiltMark* b = BuiltSlot(tag, true))
+        b->tint = tint;
+    if (!tint)
+        return;
+
+    DWORD* colour = (DWORD*)((BYTE*)tag + 0x0C);
+    DWORD const was = *colour;
+    *colour = Tinted(was, g_squadTint[tint - 1].rgb);
+    if (g_colourLogged < 4) {
+        ++g_colourLogged;
+        Log("tint: squad %d, colour %08X -> %08X", tint, was, *colour);
+    }
+}
+
+__declspec(naked) static void ColourHook()
+{
+    __asm {
+        pushad
+        pushfd
+        push ebx                    // the unit
+        push esi                    // the tag
+        call NameTagColour
+        add  esp, 8
+        popfd
+        popad
+
+        mov  eax, [esi + 8]         // the stolen bytes, replayed
+        test eax, eax
+        jmp  [g_colourResume]
+    }
+}
+
 __declspec(naked) static void MarkerHook()
 {
     __asm {
@@ -650,6 +779,34 @@ void NameTag_LoadSettings(const char* dir)
     g_auraFor[MARK_WORLD]      = GetPrivateProfileIntA("NameTag", "WorldAura", kDefaultAura[MARK_WORLD], ini);
     g_auraFor[MARK_TOURNAMENT] = GetPrivateProfileIntA("NameTag", "TournamentAura", kDefaultAura[MARK_TOURNAMENT], ini);
     g_auraFor[MARK_BOT]        = GetPrivateProfileIntA("NameTag", "BotAura", kDefaultAura[MARK_BOT], ini);
+
+    // The squad tint. SquadAuras and SquadColours are four comma-separated
+    // values each, in squad order (Gold, Green, Blue, Purple); the colours are
+    // RRGGBB hex. Anything left out keeps its default.
+    g_tintPercent = GetPrivateProfileIntA("NameTag", "SquadTint", 40, ini);
+    if (g_tintPercent < 0)   g_tintPercent = 0;
+    if (g_tintPercent > 100) g_tintPercent = 100;
+    memcpy(g_squadTint, kDefaultSquadTint, sizeof(g_squadTint));
+
+    char list[160] = { 0 };
+    GetPrivateProfileStringA("NameTag", "SquadAuras", "", list, sizeof(list), ini);
+    char* p = list;
+    for (int s = 0; s < 4 && *p; ++s) {
+        char* end = NULL;
+        unsigned long v = strtoul(p, &end, 10);
+        if (end != p) g_squadTint[s].aura = (DWORD)v;
+        p = end;
+        while (*p == ',' || *p == ' ') ++p;
+    }
+    GetPrivateProfileStringA("NameTag", "SquadColours", "", list, sizeof(list), ini);
+    p = list;
+    for (int s = 0; s < 4 && *p; ++s) {
+        char* end = NULL;
+        unsigned long v = strtoul(p, &end, 16);
+        if (end != p) g_squadTint[s].rgb = (DWORD)v & 0xFFFFFF;
+        p = end;
+        while (*p == ',' || *p == ' ') ++p;
+    }
 }
 
 void NameTag_Install()
@@ -705,5 +862,16 @@ void NameTag_Install()
         Log("marker installed at 0x%08X (test marker %d, auras %u/%u/%u, colour codes %s)", kMarkerSite,
             g_testMarker, g_auraFor[MARK_WORLD], g_auraFor[MARK_TOURNAMENT], g_auraFor[MARK_BOT],
             g_flagsWritable ? "on" : "OFF");
+    }
+
+    // The squad tint is its own hook too, and leans on the probe above to
+    // re-dirty a tag whose squad flag arrived after it was built.
+    if (g_tintPercent > 0 &&
+        VerifySig(kColourSite, kColourSig, sizeof(kColourSig), "name tag colour") &&
+        WriteJump(kColourSite, (void*)&ColourHook, kColourStolen)) {
+        g_colourHooked = 1;
+        Log("squad tint installed at 0x%08X (%d%%; %u=%06X %u=%06X %u=%06X %u=%06X)", kColourSite, g_tintPercent,
+            g_squadTint[0].aura, g_squadTint[0].rgb, g_squadTint[1].aura, g_squadTint[1].rgb,
+            g_squadTint[2].aura, g_squadTint[2].rgb, g_squadTint[3].aura, g_squadTint[3].rgb);
     }
 }
