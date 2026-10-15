@@ -1,0 +1,10 @@
+{
+  "name": "patch-enUS-A",
+  "change": "vh-spectator",
+  "stage": "/tmp/centmode/vh-spectator/A",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "DBFilesClient\\Map.dbc": "becc1469d5ad715673acf904475b17fc",
+    "Interface\\FrameXML\\WorldStateFrame.lua": "2dd8590ff298bd62f6755620d33d214e"
+  }
+}

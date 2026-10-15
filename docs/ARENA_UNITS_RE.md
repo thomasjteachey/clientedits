@@ -49,3 +49,41 @@ created; (2) every other player's arena-faction byte already correct in the
 CREATE packet. The check runs at object creation, so a byte set afterwards may
 not re-slot the player (the second call site may be a re-init path — not yet
 confirmed which).
+
+## Everything that reads `[0xBEA570]` (2026-10-15)
+
+Verified statically while making Violet Hold die like an arena. `0xBEA570` is set
+only by the STATUS_IN_PROGRESS branch of the SMSG_BATTLEFIELD_STATUS parser: it
+reads the packet's map id into `0xBEA564` @ `0x54AF75`, looks it up in the client's
+Map.dbc (min id `0xAD4170`, max `0xAD416C`, rows `0xAD4180`) and stores row `+8`
+(InstanceType) @ `0x54AFB2`. It is zeroed with the map id when the parser finds no
+active slot (`0x54B17E`) and by the battlefield state reset (`0x54E37D`).
+So "arena" to the client means **the battlefield's map is InstanceType 4 in the
+client's own Map.dbc** - the packet's team-size byte plays no part. The other 16
+references are all `cmp dword [0xBEA570], 4`:
+
+| site | in | arena (==4) does |
+|---|---|---|
+| `0x549AD3` | `IsActiveBattlefieldArena` `0x549AD0` (Lua table `0xACD19C`) | returns true. FrameXML keys the DEATH popup on it (StaticPopup.lua: `DEATH_RELEASE_SPECTATOR` on show, prints `ARENA_SPECTATOR` on release), the scoreboard (arena columns, ToggleWorldStateScoreFrame refuses mid-match), the minimap menu's LEAVE_ARENA and the end-of-match ARENA_COMPLETE_MESSAGE |
+| `0x4F8979` | full-screen effect picker (`0x4F7020(id)`) | **skips the ghost screen.** Order: an aura with effect 260 SCREEN_EFFECT wins (its MiscValue is the effect id); else `PLAYER_FLAGS & 0x10` (ghost, player block `+0x1008`, field 2) and not arena -> effect 1; else descriptor byte `+0x10E7 & 0x40` -> effect 0x51; else 0 (none) |
+| `0x515A03` | `ResurrectHasTimer` `0x515A00` | returns nil |
+| `0x512C4E`, `0x524A5D`, `0x5267A6` | corpse-range state `0xBD0820` | skips firing events 0x184-0x186 (by position, the corpse in-range / out-of-range family - no "Resurrect" reclaim prompt; event names not confirmed) |
+| `0x524AAA` | same function as `0x524A5D`, after a ghost-flag test | skips firing event 0x216 |
+| `0x6E1D91`, `0x6E8300` | CGPlayer create / re-init | assigns arenaN slots (above) |
+| `0x740218`, `0x7403D7` | pet create paths | assigns arenapetN slots via `0x54D1C0` |
+| `0x4D72B3` | object update path | calls `0x54ABF0` with the unit's GUID |
+| `0x54B5F2` | packet handler (reads a GUID) | routes to `0x54AD10` |
+| `0x54AA85` | loop over battlefield members `0xBEA368` | skips the per-member work |
+| `0x54CE4D` | timed battlefield check (`0xBEA584`/`0xBEA588`) | skipped |
+| `0x521EC2` | unit-pair test on descriptor byte `+0x1D1` | forces the flag false |
+
+`IsInInstance` (`0x5156A0`) is separate: it reads the CURRENT map (`0xBD088C`)
+InstanceType and returns "arena" for 4, which loads Blizzard_ArenaUI from
+UIParent and gates Blizzard_BattlefieldMinimap (no toggle in "arena"),
+WorldStateFrame_CanShowBattlefieldMinimap and the world map's report-AFK click
+(both "pvp" only).
+
+**Violet Hold uses this.** The client's Map.dbc row 1608 is InstanceType 4 (the
+server's stays 3) since patch-enUS-A 1.00167; see
+`framexml/staged-vh-spectator/README.md` for what that switches on and what
+WorldStateFrame.lua switches back off.
