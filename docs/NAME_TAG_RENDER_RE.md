@@ -202,6 +202,14 @@ since a marker tag built with colour codes on is not one to recolour without a
 relayout). Settings: `[NameTag] SquadTint` (percent towards the squad colour,
 default 65 since client-tweaks 1.00022 - 40 was too subtle - 0 = off), `SquadAuras`, `SquadColours` (RRGGBB hex, squad order).
 
+**Arena allies are green (client-tweaks 1.00024, owner: "ALWAYS tinted green in
+arenas (not blue) so i can differentiate them from blue team").** Before any
+tint is considered, a player whose arena-faction byte (descriptor `[unit+0x1008]`
+`+0x1F`) equals yours (`[0x00BEA54A]`) while the battlefield map is an arena
+(`[0x00BEA570]` == 4) is drawn 00FF00 outright, tint key 8. That is the client's
+own ally test (docs/ARENA_UNITS_RE.md), so it covers two-team and multi-team
+arenas alike. `[NameTag] ArenaAllyGreen` / `ArenaAllyColour` override it.
+
 The World / Tournament / Bot marker word is drawn in the squad's **full**
 colour in a squad match (client-tweaks 1.00020). The squad rides in the
 marker key the tag was built with (`mark | squad << 4`), so a flag arriving

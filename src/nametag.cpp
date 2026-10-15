@@ -234,6 +234,25 @@ static SquadTint g_lobbyTint[3];
 static int g_lobbyTintOn = 1;                     // [NameTag] LobbyTint, 0 = off
 static const int kLobbyKey = 5;                   // the first lobby tint key
 
+// ALLIES IN AN ARENA are drawn green outright - the client's own friendly
+// reaction green (00FF00, the table at 0x00BD0CA4) - so a team-mate never
+// reads as the Blue squad's colour, nor as the plain blue the client gives a
+// friendly player. An ally is who the client itself counts as one: the
+// player's arena-faction byte (PLAYER_BYTES_3 byte 3, descriptor block
+// [unit+0x1008] +0x1F) equal to yours from the battlefield status
+// [0x00BEA54A], while the battlefield map is an arena ([0x00BEA570] == 4) -
+// the same comparison that keeps them out of arena1-5 (docs/ARENA_UNITS_RE.md).
+// In a multi-team arena the server sends every viewer their own squad on
+// their side and everyone else on the other, so it means your squad there.
+static const DWORD kArenaMapType    = 0x00BEA570;
+static const DWORD kMyArenaFaction  = 0x00BEA54A;
+static const DWORD kPlayerDesc      = 0x1008;
+static const DWORD kArenaFactionOff = 0x1F;
+static int   g_allyGreenOn = 1;                   // [NameTag] ArenaAllyGreen, 0 = off
+static DWORD g_allyColour  = 0x00FF00;            // [NameTag] ArenaAllyColour, RRGGBB
+static int   g_arenaGlobalsOk = 0;
+static const int kAllyKey = 8;                    // the ally tint key, after the lobby's
+
 // The tint marks the OTHER squads: your own keeps the friendly green every
 // ally's name has elsewhere. Who you are comes from the active player's guid,
 // cdecl () -> u64 in edx:eax, the call playercollide.cpp makes every frame.
@@ -720,6 +739,20 @@ static int LobbyOf(void* unit)
     return 0;
 }
 
+// Whether `unit` (a player) is on your side of the arena you are in.
+static bool IsArenaAlly(void* unit)
+{
+    if (!g_arenaGlobalsOk || *(volatile DWORD*)kArenaMapType != 4)
+        return false;
+    BYTE* u = (BYTE*)unit;
+    if (!Readable(u + kPlayerDesc, 4))
+        return false;
+    BYTE* desc = *(BYTE**)(u + kPlayerDesc);
+    if (!desc || !Readable(desc + kArenaFactionOff, 1))
+        return false;
+    return desc[kArenaFactionOff] == *(volatile BYTE*)kMyArenaFaction;
+}
+
 static int WantedTint(void* tag, void* unit)
 {
     if (!unit || !Readable(tag, 0x20))
@@ -727,6 +760,9 @@ static int WantedTint(void* tag, void* unit)
     // Players only, as for the marker.
     if (*(DWORD*)((BYTE*)tag + 0x14) & 0xFFFF0000)
         return 0;
+    // In an arena an ally is green before anything else is considered.
+    if (g_allyGreenOn && IsArenaAlly(unit))
+        return kAllyKey;
     if (g_tintPercent > 0) {
         // Allies are not tinted. Until your own flag lands MySquad() is 0 and
         // they are; the pre-hook rebuilds them once it does, as for any tint
@@ -767,14 +803,17 @@ extern "C" void __cdecl NameTagColour(void* tag, void* unit)
 
     DWORD* colour = (DWORD*)((BYTE*)tag + 0x0C);
     DWORD const was = *colour;
-    if (tint >= kLobbyKey)
+    if (tint == kAllyKey)
+        *colour = (was & 0xFF000000) | (g_allyColour & 0xFFFFFF);
+    else if (tint >= kLobbyKey)
         *colour = (was & 0xFF000000) | (g_lobbyTint[tint - kLobbyKey].rgb & 0xFFFFFF);
     else
         *colour = Tinted(was, g_squadTint[tint - 1].rgb);
     if (g_colourLogged < 4) {
         ++g_colourLogged;
-        Log("tint: %s %d, colour %08X -> %08X", tint >= kLobbyKey ? "lobby" : "squad",
-            tint >= kLobbyKey ? tint - kLobbyKey + 1 : tint, was, *colour);
+        Log("tint: %s %d, colour %08X -> %08X",
+            tint == kAllyKey ? "arena ally" : tint >= kLobbyKey ? "lobby" : "squad",
+            tint == kAllyKey ? 0 : tint >= kLobbyKey ? tint - kLobbyKey + 1 : tint, was, *colour);
     }
 }
 
@@ -891,6 +930,15 @@ void NameTag_LoadSettings(const char* dir)
     // The lobby tint: LobbyAuras / LobbyColours are three values each, in the
     // order Blue, Red, spectating, read the same way.
     g_lobbyTintOn = GetPrivateProfileIntA("NameTag", "LobbyTint", 1, ini);
+    g_allyGreenOn = GetPrivateProfileIntA("NameTag", "ArenaAllyGreen", 1, ini);
+    {
+        char colourText[16] = { 0 };
+        GetPrivateProfileStringA("NameTag", "ArenaAllyColour", "", colourText, sizeof(colourText), ini);
+        char* end = NULL;
+        unsigned long v = strtoul(colourText, &end, 16);
+        if (end != colourText)
+            g_allyColour = (DWORD)v & 0xFFFFFF;
+    }
     memcpy(g_lobbyTint, kDefaultLobbyTint, sizeof(g_lobbyTint));
     GetPrivateProfileStringA("NameTag", "LobbyAuras", "", list, sizeof(list), ini);
     p = list;
@@ -970,13 +1018,16 @@ void NameTag_Install()
     // The squad tint is its own hook too, and leans on the probe above to
     // re-dirty a tag whose squad flag arrived after it was built.
     g_activeOk = VerifySig(kGetActiveGuid, kGetActiveSig, sizeof(kGetActiveSig), "GetActivePlayerGuid");
-    if ((g_tintPercent > 0 || g_lobbyTintOn) &&
+    g_arenaGlobalsOk = Readable((void*)kArenaMapType, 4) && Readable((void*)kMyArenaFaction, 1);
+    if ((g_tintPercent > 0 || g_lobbyTintOn || g_allyGreenOn) &&
         VerifySig(kColourSite, kColourSig, sizeof(kColourSig), "name tag colour") &&
         WriteJump(kColourSite, (void*)&ColourHook, kColourStolen)) {
         g_colourHooked = 1;
         Log("squad tint installed at 0x%08X (%d%%; %u=%06X %u=%06X %u=%06X %u=%06X)", kColourSite, g_tintPercent,
             g_squadTint[0].aura, g_squadTint[0].rgb, g_squadTint[1].aura, g_squadTint[1].rgb,
             g_squadTint[2].aura, g_squadTint[2].rgb, g_squadTint[3].aura, g_squadTint[3].rgb);
+        Log("arena allies %s (%06X, globals %s)", g_allyGreenOn ? "green" : "untouched",
+            g_allyColour, g_arenaGlobalsOk ? "ok" : "UNREADABLE");
         Log("lobby tint %s (%u=%06X %u=%06X %u=%06X)", g_lobbyTintOn ? "on" : "off",
             g_lobbyTint[0].aura, g_lobbyTint[0].rgb, g_lobbyTint[1].aura, g_lobbyTint[1].rgb,
             g_lobbyTint[2].aura, g_lobbyTint[2].rgb);
