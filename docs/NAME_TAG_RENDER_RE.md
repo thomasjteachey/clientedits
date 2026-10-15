@@ -200,6 +200,11 @@ since a marker tag built with colour codes on is not one to recolour without a
 relayout). Settings: `[NameTag] SquadTint` (percent towards the squad colour,
 default 40, 0 = off), `SquadAuras`, `SquadColours` (RRGGBB hex, squad order).
 
+The World / Tournament / Bot marker word is drawn in the squad's **full**
+colour in a squad match (client-tweaks 1.00020). The squad rides in the
+marker key the tag was built with (`mark | squad << 4`), so a flag arriving
+rebuilds the word too, and it does not depend on `SquadTint` being on.
+
 ## 6. Earlier plan (superseded by section 5)
 
 

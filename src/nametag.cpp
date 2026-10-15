@@ -184,7 +184,9 @@ static DWORD g_markerResume = kMarkerResume;
 // a name leans towards its squad's colour without the two-sided arenas
 // changing at all. It is a lean, not a recolour: hostile names stay reddish,
 // friendly ones stay friendly, and none of them becomes the plain blue a
-// friendly player's name already means.
+// friendly player's name already means. The World / Tournament / Bot word
+// above the name is the one thing drawn in the squad's full colour there
+// (MarkerText).
 //
 // The name colour is one ARGB dword that [unitVtable+0x78] writes to tag+0x0C,
 // in the dirty block, before either use of it:
@@ -583,23 +585,38 @@ static int MarkerFor(void* tag, void* unit)
     return g_testMarker;
 }
 
+static int SquadOf(void* unit);
+
+// A marker key: the marker in the low four bits and, in a multi-team arena,
+// the squad (1..4) above them - the word is drawn in the squad's own colour
+// there, so a squad flag arriving has to rebuild the tag just as a new marker
+// does, and keeping both in the one key the tag was built with does that.
+static int MarkerOf(int key) { return key & 0xF; }
+static int SquadOfKey(int key) { return key >> 4; }
+
 // |c codes: parsed by the font's tokenizer (0x006BD64F), and honoured once the
 // tag's string is built without flag 0x08 - see kFlagsImm.
-static const char* MarkerText(int m)
+static const char* const kMarkerWord[]   = { NULL, "World", "Tournament", "Bot" };
+static const DWORD       kMarkerColour[] = { 0, 0x73BFFF, 0xFF9933, 0xB266FF };
+
+// Writes the marker line for `key` into out; returns its length, 0 for none.
+static int MarkerText(int key, char* out, size_t size)
 {
-    switch (m) {
-    case MARK_WORLD:      return "|cff73bfffWorld|r\n";
-    case MARK_TOURNAMENT: return "|cffff9933Tournament|r\n";
-    case MARK_BOT:        return "|cffb266ffBot|r\n";
-    }
-    return NULL;
+    int const mark = MarkerOf(key);
+    int const squad = SquadOfKey(key);
+    if (mark < MARK_WORLD || mark > MARK_BOT)
+        return 0;
+    DWORD const rgb = squad >= 1 && squad <= 4 ? g_squadTint[squad - 1].rgb : kMarkerColour[mark];
+    int const n = _snprintf_s(out, size, _TRUNCATE, "|cff%06x%s|r\n", rgb & 0xFFFFFF, kMarkerWord[mark]);
+    return n > 0 ? n : 0;
 }
 
 static int WantedMarker(void* tag, void* unit)
 {
     if (!NameTag_Enabled() || !unit || !Readable(tag, 0x20))
         return MARK_NONE;
-    return MarkerFor(tag, unit);
+    int const mark = MarkerFor(tag, unit);
+    return mark != MARK_NONE ? mark | (SquadOf(unit) << 4) : MARK_NONE;
 }
 
 extern "C" int __cdecl NameTagMarker(void* tag, void* unit, char* buf, int lines)
@@ -609,8 +626,8 @@ extern "C" int __cdecl NameTagMarker(void* tag, void* unit, char* buf, int lines
     if (BuiltMark* b = BuiltSlot(tag, true))
         b->mark = mark;
 
-    const char* text = MarkerText(mark);
-    if (!text)
+    char text[64];
+    if (!MarkerText(mark, text, sizeof(text)))
         return lines;
 
     size_t have = strnlen(buf, 0x400);
