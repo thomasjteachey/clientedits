@@ -22,17 +22,20 @@ CENTURION_FOUR_CORNERS_TITLE = "Four Corners"
 CENTURION_FOUR_CORNERS_TEXT = "Up to four teams, one in each corner of Baradin Hold. Every other team is your enemy, and the last team standing wins."
 
 -- CENTURION: Solo Shuffle. Its battlemaster sends CCGAME ARENAQUEUE:SHUFFLE.
--- The window then offers the one queue it takes - a 3v3 skirmish, alone - on
--- the practice line beside the "Arena bot matches" box, which a shuffle obeys
--- like any skirmish. The rated rows are put away (there is no rated shuffle)
--- and the rated header says what the mode is instead.
+-- The window then offers the two queues it takes - a 2v2 or a 3v3 skirmish,
+-- alone - on the practice line beside the "Arena bot matches" box, which a
+-- shuffle obeys like any skirmish. The rated rows are put away (there is no
+-- rated shuffle) and the rated header says what the mode is instead.
 CENTURION_ARENA_SHUFFLE = false
 CENTURION_SOLO_SHUFFLE_TITLE = "Solo Shuffle"
 CENTURION_SOLO_SHUFFLE_HEADER = "Queue alone. New teams every round."
-CENTURION_SOLO_SHUFFLE_ROW = "3v3 Solo Shuffle"
-CENTURION_SOLO_SHUFFLE_TEXT = "Six players, six rounds of 3v3, and the teams are dealt again before every round. Win more rounds than you lose."
--- The 3v3 practice row, the only one a shuffle shows.
-local SHUFFLE_ROW = MAX_ARENA_TEAMS + 2
+CENTURION_SOLO_SHUFFLE_ROWS = {
+    [MAX_ARENA_TEAMS + 1] = "2v2 Solo Shuffle",
+    [MAX_ARENA_TEAMS + 2] = "3v3 Solo Shuffle",
+}
+CENTURION_SOLO_SHUFFLE_TEXT = "The teams are dealt again before every round: six rounds of 3v3, or three of 2v2. Win more rounds than you lose."
+-- Picked when the window opens on anything else: the 3v3 row.
+local SHUFFLE_DEFAULT_ROW = MAX_ARENA_TEAMS + 2
 
 -- "2v2" for n = 2, "2v2v2v2" for four teams of two.
 local function TeamsLabel(size, teams)
@@ -228,8 +231,12 @@ function ArenaFrame_Update()
     end
     local shuffle = CENTURION_ARENA_SHUFFLE
     if shuffle then
-        practiceLabels[SHUFFLE_ROW - MAX_ARENA_TEAMS] = CENTURION_SOLO_SHUFFLE_ROW
-        ArenaFrame.selection = SHUFFLE_ROW
+        for row, label in pairs(CENTURION_SOLO_SHUFFLE_ROWS) do
+            practiceLabels[row - MAX_ARENA_TEAMS] = label
+        end
+        if not CENTURION_SOLO_SHUFFLE_ROWS[ArenaFrame.selection or 0] then
+            ArenaFrame.selection = SHUFFLE_DEFAULT_ROW
+        end
     end
     if ArenaFrameFrameLabel then
         if shuffle then
@@ -241,18 +248,10 @@ function ArenaFrame_Update()
     if ArenaFrameNameHeader then
         ArenaFrameNameHeader:SetText(shuffle and CENTURION_SOLO_SHUFFLE_HEADER or ARENA_RATED_BATTLE)
     end
-    -- Alone on the practice line, the shuffle row sits where row 5 would.
-    -- ArenaFrame_Position puts it back under row 5 whenever the window opens.
-    local shuffleButton = _G["ArenaZone"..SHUFFLE_ROW]
-    if shuffle and shuffleButton and ArenaFrameNameHeader2 then
-        shuffleButton:ClearAllPoints()
-        shuffleButton:SetPoint("LEFT", ArenaFrame, "LEFT", RATED_X, 0)
-        shuffleButton:SetPoint("TOP", ArenaFrameNameHeader2, "BOTTOM", 0, -10)
-    end
 
     for i = 1, MAX_ARENA_BATTLES do
         local button = _G["ArenaZone"..i]
-        if button and shuffle and i ~= SHUFFLE_ROW then
+        if button and shuffle and not CENTURION_SOLO_SHUFFLE_ROWS[i] then
             button:Hide()
         elseif button then
             button:Show()

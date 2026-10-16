@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "solo-shuffle-2v2",
+  "stage": "/tmp/centmode/stage-soloshuffle2/A",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\ArenaFrame.lua": "71bc5d05d3315aa9599a29d42dec43cb"
+  }
+}

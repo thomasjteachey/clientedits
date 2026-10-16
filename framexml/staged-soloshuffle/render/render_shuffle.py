@@ -79,10 +79,11 @@ def shuffle():
     fr = frame_base('Solo Shuffle', 'Queue alone. New teams every round.')
     hl = F.art('UI-Listbox-Highlight2.png')
     p_top = 194
-    fr.blit(hl, RATED_X, p_top, 315, 16)
-    fr.text('3v3 Solo Shuffle', RATED_X + 8, p_top + 8, 12, F.GOLD, anchor='lm')
+    fr.blit(hl, RATED_X, p_top + ROW, 315, 16)
+    fr.text('2v2 Solo Shuffle', RATED_X + 8, p_top + 8, 12, F.GOLD, anchor='lm')
+    fr.text('3v3 Solo Shuffle', RATED_X + 8, p_top + ROW + 8, 12, F.GOLD, anchor='lm')
     bot_box(fr)
-    description(fr, 'Six players, six rounds of 3v3, and the teams are dealt again before every round. Win more rounds than you lose.')
+    description(fr, 'The teams are dealt again before every round: six rounds of 3v3, or three of 2v2. Win more rounds than you lose.')
     buttons(fr, False)
     return fr.im
 
