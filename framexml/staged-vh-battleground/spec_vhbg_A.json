@@ -1,0 +1,11 @@
+{
+  "name": "patch-enUS-A",
+  "change": "vh-battleground",
+  "stage": "/tmp/centmode/stage-vhbg/stage",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "DBFilesClient\\Map.dbc": "3188e1952a5522f96fb38121132d07a0",
+    "DBFilesClient\\Spell.dbc": "930a3a1566f819996651a1178d95d6ea",
+    "Interface\\FrameXML\\WorldStateFrame.lua": "0df66700718cb5cc35bbdfac1dd775d8"
+  }
+}
