@@ -76,7 +76,7 @@ def ordinary():
 
 
 def shuffle():
-    fr = frame_base('Solo Shuffle', 'Queue alone. New teams every round.')
+    fr = frame_base('Solo Shuffle', 'Solo or grouped. New teams every round.')
     hl = F.art('UI-Listbox-Highlight2.png')
     p_top = 194
     fr.blit(hl, RATED_X, p_top + ROW, 315, 16)
@@ -84,7 +84,7 @@ def shuffle():
     fr.text('3v3 Solo Shuffle', RATED_X + 8, p_top + ROW + 8, 12, F.GOLD, anchor='lm')
     bot_box(fr)
     description(fr, 'The teams are dealt again before every round: six rounds of 3v3, or three of 2v2. Win more rounds than you lose.')
-    buttons(fr, False)
+    buttons(fr, True)
     return fr.im
 
 

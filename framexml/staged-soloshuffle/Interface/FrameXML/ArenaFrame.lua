@@ -23,12 +23,16 @@ CENTURION_FOUR_CORNERS_TEXT = "Up to four teams, one in each corner of Baradin H
 
 -- CENTURION: Solo Shuffle. Its battlemaster sends CCGAME ARENAQUEUE:SHUFFLE.
 -- The window then offers the two queues it takes - a 2v2 or a 3v3 skirmish,
--- alone - on the practice line beside the "Arena bot matches" box, which a
--- shuffle obeys like any skirmish. The rated rows are put away (there is no
--- rated shuffle) and the rated header says what the mode is instead.
+-- alone or with a party of up to four or six, who all land in the same match
+-- and are dealt into the teams like anyone else - on the practice line beside
+-- the "Arena bot matches" box, which a shuffle obeys like any skirmish. The
+-- rated rows are put away (there is no rated shuffle) and the rated header
+-- says what the mode is instead. A party of six is a raid, so BattlemasterList
+-- row 6 carries MaxGroupSize 6: the client checks the group against the row of
+-- the list it shows, and the server sends this one as All Arenas.
 CENTURION_ARENA_SHUFFLE = false
 CENTURION_SOLO_SHUFFLE_TITLE = "Solo Shuffle"
-CENTURION_SOLO_SHUFFLE_HEADER = "Queue alone. New teams every round."
+CENTURION_SOLO_SHUFFLE_HEADER = "Solo or grouped. New teams every round."
 CENTURION_SOLO_SHUFFLE_ROWS = {
     [MAX_ARENA_TEAMS + 1] = "2v2 Solo Shuffle",
     [MAX_ARENA_TEAMS + 2] = "3v3 Solo Shuffle",
@@ -164,10 +168,12 @@ function ArenaFrame_OnEvent(self, event, ...)
         -- make sure widgets are laid out
         ArenaFrame_Position()
 
-        -- default selection
+        -- default selection (a shuffle has no rated rows: ArenaFrame_Update
+        -- picks its own default, the 3v3 that takes any party)
         if ((GetNumPartyMembers() > 0) or (GetNumRaidMembers() > 0))
             and IsPartyLeader()
             and GetCurrentArenaSeason() ~= NO_ARENA_SEASON
+            and not CENTURION_ARENA_SHUFFLE
         then
             -- parties go to practice
             if not ArenaFrame.selection or ArenaFrame.selection < (MAX_ARENA_TEAMS + 1) then
@@ -281,11 +287,9 @@ function ArenaFrame_Update()
         end
     end
 
-    -- only practice queues are joinable from this frame; a shuffle only alone
-    if shuffle then
-        ArenaFrameJoinButton:Enable()
-        ArenaFrameGroupJoinButton:Hide()
-    elseif ArenaFrame.selection and ArenaFrame.selection > MAX_ARENA_TEAMS then
+    -- only practice queues are joinable from this frame (a shuffle's rows are
+    -- all practice rows, alone or as a group)
+    if ArenaFrame.selection and ArenaFrame.selection > MAX_ARENA_TEAMS then
         ArenaFrameJoinButton:Enable()
         ArenaFrameGroupJoinButton:Show()
         if (((GetNumPartyMembers() > 0) or (GetNumRaidMembers() > 0)) and IsPartyLeader()) then
