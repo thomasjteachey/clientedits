@@ -33,7 +33,7 @@ TIPS = [
     "World characters level up and roam Azeroth. Tournament characters skip the world and fight in battlegrounds and arenas with their own gear and queues.",
     "The word above a player's name tells you whether they are a World character, a Tournament character or a Bot. You can turn it off under Interface, AddOns, Centurion.",
     "You can have up to 20 characters on Centurion.",
-    "Collect Warchief's Socks and bring them to Jonny the Warchief in the Gurubashi Arena to start unlocking the Centurion hubs.",
+    "Collect Warchief's Socks and bring them to the Warchief in the Gurubashi Arena to start unlocking the Centurion hubs.",
     "Each sock quest opens a new hub with its own vendors: Gurubashi, Thrall's Stash, Blackrock and Coldarra, New Hearthglen, and the Caverns of Time.",
     "Every Portal Trainer teaches all six city teleports.",
     "Centurion's world ends at level 60. Outland and Northrend are closed.",
