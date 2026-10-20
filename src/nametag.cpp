@@ -45,6 +45,7 @@
 #include <string.h>
 
 #include "nametag.h"
+#include "unitbars.h"
 
 static char g_dir[MAX_PATH] = { 0 };
 static int  g_enabled = 1;          // [NameTag] Enabled
@@ -457,6 +458,7 @@ extern "C" void __cdecl NameTagWorldLuaReady()
 {
     g_cvarRegistered = 0;
     RegisterCVar();
+    UnitBars_WorldLuaReady();      // its Lua functions ride on this hook (unitbars.h)
     if (g_lookupOk)
         Log("world Lua ready: centurionNameTags %s", ((CVarLookup_t)kCVarLookup)("centurionNameTags") ? "present" : "MISSING");
 }

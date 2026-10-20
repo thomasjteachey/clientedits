@@ -47,6 +47,7 @@
 #include "nametag.h"
 #include "rulerelax.h"
 #include "sndguard.h"
+#include "unitbars.h"
 
 #define DEFAULT_LOCK_ANIMS   "119,223"     // StealthWalk, StealthRun
 #define DEFAULT_ATTACK_ANIMS "16,17,18,19,46,49,85,86,87,88,107,117,482"
@@ -499,6 +500,9 @@ static void Install(HMODULE self)
     // writes what it sees to the log.
     NameTag_LoadSettings(g_dir);
     NameTag_Install();
+
+    UnitBars_LoadSettings(g_dir);
+    UnitBars_Install();
 
     // Aura-gated waiver of client-side spell rules (the Valra set's "no weapon
     // requirement"): its own [RuleRelax] section, ON by default keyed on 90217.
