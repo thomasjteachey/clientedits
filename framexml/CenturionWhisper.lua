@@ -11,7 +11,8 @@
 -- So on those realms the box waits for the second word and takes both. The
 -- rare character with no family name (Chromi, for one) still gets the whisper:
 -- the server hands a second word back to the message when the first alone is a
--- name and the pair is not (Surnames::SplitWhisperTarget).
+-- name and the pair is not (Surnames::SplitWhisperTarget). A one-word message
+-- sent with Enter is handled by the ChatEdit_SendText hook at the bottom.
 
 local CENTURION_WHISPER_REALMS = { ["centurion"] = true, ["centuriondev"] = true };
 
@@ -45,4 +46,35 @@ function ChatEdit_ExtractTellTarget(editBox, msg)
 	editBox:SetText(rest);
 	ChatEdit_UpdateHeader(editBox);
 	return true;
+end
+
+-- Enter pressed while the box is still waiting for that space: "/w Chromi hi"
+-- is a one-word whisper to a one-word name, and it used to go nowhere at all.
+-- The only reading that can be sent is the first word as the target and the
+-- second as the message; the server still takes a first name alone when only
+-- one character answers to it.
+local function CenturionWhisper_IsWhisperCommand(command)
+	command = strupper(command);
+	local i = 1;
+	while ( _G["SLASH_WHISPER"..i] ) do
+		if ( strupper(_G["SLASH_WHISPER"..i]) == command ) then
+			return true;
+		end
+		i = i + 1;
+	end
+	return false;
+end
+
+local stockSendText = ChatEdit_SendText;
+
+function ChatEdit_SendText(editBox, addHistory)
+	if ( CenturionWhisper_IsCenturionRealm() ) then
+		local command, first, second = strmatch(editBox:GetText(), "^%s*(/%S+)%s+([^%s|]%S*)%s+(%S+)%s*$");
+		if ( command and CenturionWhisper_IsWhisperCommand(command) ) then
+			editBox:SetAttribute("tellTarget", first);
+			editBox:SetAttribute("chatType", "WHISPER");
+			editBox:SetText(second);
+		end
+	end
+	return stockSendText(editBox, addHistory);
 end

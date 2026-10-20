@@ -57,6 +57,18 @@ TIPS = [
     "Your world map shows every graveyard in the zone.",
     "Type /join World to talk with everyone on the realm.",
     "Damage absorb shields show as an overlay on player and target health bars.",
+    # Playerbots
+    "If a playerbot on your team is carrying a flag, whisper it the word drop and it will drop the flag for you.",
+    "Playerbots in the world play solo and turn down group invites.",
+    "A playerbot killed by a player drops its gear in a cache, including weapons and armor from its bags.",
+    "Outside battlegrounds and arenas, playerbots leave Tournament characters alone.",
+    "Playerbots in battlegrounds wear the <The Robot Masters> guild tag.",
+    "With Arena bot matches checked, a skirmish with no one left to match you against is filled out with bots. Rated arenas never are.",
+    # Chat, commands and services
+    "Every character has a family name. To whisper someone, type both: /w Firstname Lastname.",
+    "Whisper Chromie for a cat fact.",
+    "Type .info to see the realm's rates, when quests reset, your honor cap and your War Mode status.",
+    "Vashti the Transmogrifier in New Hearthglen can change how your gear looks.",
 ]
 
 
