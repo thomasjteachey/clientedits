@@ -24,6 +24,15 @@
 //               UNIT_FIELD_FLAGS +0xEC (0x02000000 = not selectable).
 //   [obj+0x14]  TYPEID (3 = unit, 4 = player).
 //
+//   0x007A3B70  CWorld::Intersect, cdecl(start, end, hitOut, float* frac, flags,
+//                 0) -> bool. frac goes in as 1 and comes back as the share of the
+//                 ray before the hit. Flags 0x00120171 are terrain, WMOs and doodad
+//                 collision - no units (goeditor.cpp logs the client's own calls).
+//               goeditor.cpp may own the first bytes with a jmp: calling through
+//               it is the same call.
+//   [camera+0x08] the camera's world position (0x007E52A0's distance gate reads
+//               it so; the camera is [worldFrame+0x7E20]).
+//
 // Lua will not call a C function outside Wow.exe's .text (gluebridge.cpp), so
 // each of the two functions is registered as a 5-byte jmp in int3 padding:
 //   0x0086B5FA  the rest of the run gluebridge's thunk (0x0086B5F5) starts
@@ -34,6 +43,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <math.h>
 
 #include "unitbars.h"
 
@@ -43,6 +53,11 @@ static float g_range = 80.0f;        // [UnitBars] Range, yards from the player
 static int   g_ready = 0;            // Install verified and wrote the thunks
 static int   g_faults = 0;
 static int   g_targetReady = 0;   // CenturionTargetGUID's thunk is written
+// [UnitBars] LineOfSight: a bar whose head the camera cannot see is not handed
+// over - a bar behind a wall is hidden the way the name over it is (owner,
+// 2026-10-22: "part of the same Z as the names").
+static int   g_los = 1;
+static int   g_losReady = 0;
 
 static const DWORD kWorldToScreen = 0x004F6D20;
 static const BYTE  kWorldToScreenSig[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24, 0x8B, 0x45, 0x08, 0xD9, 0x00 };
@@ -57,6 +72,13 @@ static const BYTE  kGetReactionSig[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10, 0x5
 static const DWORD kNamePosition = 0x0071FEF0;     // CGUnit_C vtable slot 8
 static const BYTE  kNamePositionSig[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18, 0x56, 0x57, 0x8B, 0xF1 };
 static const DWORD kUnitVtable = 0x00A34D90;
+static const DWORD kIntersect = 0x007A3B70;        // CWorld::Intersect
+static const BYTE  kIntersectSig[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 };
+static const int   kIntersectFlags = 0x00120171;   // terrain, WMOs, doodads
+static const DWORD kOff_CameraPos = 0x08;
+// A hit this close to the head does not hide the bar: a turret's or a gate's own
+// collision round the point the name hangs from.
+static const float kLosSlack = 2.0f;
 #define kWorldFramePtr (*(BYTE**)0x00B7436C)
 
 static const DWORD kScanThunk = 0x0086B5FA;
@@ -101,6 +123,14 @@ typedef int   (__cdecl*    EnumVisible_t)(EnumCb_t cb, void* arg);
 typedef unsigned __int64 (__cdecl* GetActiveGuid_t)();
 typedef int   (__thiscall* GetReaction_t)(void* unit, void* other);
 typedef C3Vector* (__thiscall* NamePosition_t)(void* unit, C3Vector* out);
+typedef char (__cdecl* Intersect_t)(const float* start, const float* end, void* hitOut, float* frac, int flags, int a6);
+
+// Each unit's line of sight is tested every kLosEvery-th scan, the answer kept in
+// between: bars over sixty units cost sixty rays a frame otherwise.
+static const DWORD kLosEvery = 4;
+struct LosEntry { DWORD guidLo, guidHi, scan; bool hidden; };
+static LosEntry g_los_cache[256];
+static DWORD g_scanNo = 0;
 
 struct Bar { float fx, fy, health, scale; int reaction; DWORD guidLo, guidHi; bool isPlayer; };
 static const int kMaxBars = 96;
@@ -169,7 +199,39 @@ struct ScanCtx
     float range2;
     BYTE* worldFrame;
     float width, height;     // the frame's DDC extents
+    bool los;                // the camera's position below is good
+    float cx, cy, cz;
 };
+
+// Whether the world stands between the camera and the head: a ray from one to
+// the other that hits something more than kLosSlack yards short of the head.
+static bool Hidden(ScanCtx const* c, DWORD guidLo, DWORD guidHi, C3Vector const& head)
+{
+    LosEntry& e = g_los_cache[(guidLo ^ (guidLo >> 8)) & 0xFF];
+    if (e.guidLo == guidLo && e.guidHi == guidHi && g_scanNo - e.scan < kLosEvery)
+        return e.hidden;
+    float const start[3] = { c->cx, c->cy, c->cz };
+    float const end[3] = { head.x, head.y, head.z };
+    float const dx = end[0] - start[0], dy = end[1] - start[1], dz = end[2] - start[2];
+    float const len2 = dx * dx + dy * dy + dz * dz;
+    bool hidden = false;
+    if (len2 > kLosSlack * kLosSlack)
+    {
+        BYTE hit[64] = { 0 };            // the hit point and what was hit; more than it writes
+        float frac = 1.0f;
+        if (((Intersect_t)kIntersect)(start, end, hit, &frac, kIntersectFlags, 0) && frac >= 0.0f && frac < 1.0f)
+        {
+            // yards short of the head, by the ray's own length
+            float const shortBy = (1.0f - frac) * (float)sqrt((double)len2);
+            hidden = shortBy > kLosSlack;
+        }
+    }
+    e.guidLo = guidLo;
+    e.guidHi = guidHi;
+    e.scan = g_scanNo;
+    e.hidden = hidden;
+    return hidden;
+}
 
 static int __cdecl ScanCb(DWORD guidLo, DWORD guidHi, void* arg)
 {
@@ -210,6 +272,9 @@ static int __cdecl ScanCb(DWORD guidLo, DWORD guidHi, void* arg)
         return 1;                                    // behind the camera
     float const fx = screen.x / c->width, fy = screen.y / c->height;
     if (fx < -0.05f || fx > 1.05f || fy < -0.05f || fy > 1.05f)
+        return 1;
+    // Behind a wall, a rock, the hill: no bar, as no name.
+    if (c->los && Hidden(c, guidLo, guidHi, head))
         return 1;
 
     // How big a yard is on screen here, as a fraction of the frame's height: a
@@ -261,6 +326,12 @@ static void Scan()
     c.height = *(float*)(wf + 0x6C) - *(float*)(wf + 0x64);
     if (c.width <= 0.0f || c.height <= 0.0f)
         return;
+    BYTE* const camera = *(BYTE**)(wf + 0x7E20);
+    c.los = g_losReady != 0;
+    c.cx = *(float*)(camera + kOff_CameraPos);
+    c.cy = *(float*)(camera + kOff_CameraPos + 4);
+    c.cz = *(float*)(camera + kOff_CameraPos + 8);
+    ++g_scanNo;
     ((EnumVisible_t)kEnumVisible)(ScanCb, &c);
 }
 
@@ -417,6 +488,7 @@ void UnitBars_LoadSettings(const char* dir)
     if (GetFileAttributesA(ini) == INVALID_FILE_ATTRIBUTES)
         return;
     g_enabled = GetPrivateProfileIntA("UnitBars", "Enabled", 1, ini);
+    g_los = GetPrivateProfileIntA("UnitBars", "LineOfSight", 1, ini);
     int const range = GetPrivateProfileIntA("UnitBars", "Range", 80, ini);
     if (range >= 10 && range <= 200)
         g_range = float(range);
@@ -442,10 +514,18 @@ void UnitBars_Install()
         return;
     }
     g_ready = 1;
+    // Line of sight is its own piece too: without it every bar shows. goeditor's
+    // detour may have put a jmp over the prologue - the same function behind it.
+    if (g_los && IsReadable((void*)kIntersect, sizeof(kIntersectSig)) &&
+        (memcmp((void*)kIntersect, kIntersectSig, sizeof(kIntersectSig)) == 0 || *(BYTE*)kIntersect == 0xE9))
+        g_losReady = 1;
+    else if (g_los)
+        Log("0x%08lX (CWorld::Intersect) signature mismatch - bars shown through walls", kIntersect);
     // Click-to-target is its own piece: without it the bars still draw.
     if (SigOk(kSetTarget, kSetTargetSig, sizeof(kSetTargetSig), "CGGameUI::Target") &&
         SigOk(kTargetThunk, kPadSig, sizeof(kPadSig), "target thunk padding") &&
         JumpTo(kTargetThunk, (void*)&Lua_Target))
         g_targetReady = 1;
-    Log("installed (range %.0f yd, click-to-target %s)", g_range, g_targetReady ? "on" : "OFF");
+    Log("installed (range %.0f yd, click-to-target %s, line of sight %s)", g_range, g_targetReady ? "on" : "OFF",
+        g_losReady ? "on" : "OFF");
 }
