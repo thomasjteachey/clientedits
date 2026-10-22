@@ -21,7 +21,7 @@ CENTURION_ARENA_SQUADS = 0
 CENTURION_FOUR_CORNERS_TITLE = "Four Corners"
 CENTURION_FOUR_CORNERS_TEXT = "Up to four teams, one in each corner of Baradin Hold. Every other team is your enemy, and the last team standing wins."
 
--- CENTURION: Solo Shuffle. Its battlemaster sends CCGAME ARENAQUEUE:SHUFFLE.
+-- CENTURION: Buffle Shuffle. Its battlemaster sends CCGAME ARENAQUEUE:SHUFFLE.
 -- The window then offers the two queues it takes - a 2v2 or a 3v3 skirmish,
 -- alone or with a party of up to four or six, who all land in the same match
 -- and are dealt into the teams like anyone else - on the practice line beside
@@ -31,11 +31,11 @@ CENTURION_FOUR_CORNERS_TEXT = "Up to four teams, one in each corner of Baradin H
 -- row 6 carries MaxGroupSize 6: the client checks the group against the row of
 -- the list it shows, and the server sends this one as All Arenas.
 CENTURION_ARENA_SHUFFLE = false
-CENTURION_SOLO_SHUFFLE_TITLE = "Solo Shuffle"
+CENTURION_SOLO_SHUFFLE_TITLE = "Buffle Shuffle"
 CENTURION_SOLO_SHUFFLE_HEADER = "Solo or grouped. New teams every round."
 CENTURION_SOLO_SHUFFLE_ROWS = {
-    [MAX_ARENA_TEAMS + 1] = "2v2 Solo Shuffle",
-    [MAX_ARENA_TEAMS + 2] = "3v3 Solo Shuffle",
+    [MAX_ARENA_TEAMS + 1] = "2v2 Buffle Shuffle",
+    [MAX_ARENA_TEAMS + 2] = "3v3 Buffle Shuffle",
 }
 CENTURION_SOLO_SHUFFLE_TEXT = "The teams are dealt again before every round: six rounds of 3v3, or three of 2v2. Win more rounds than you lose."
 -- Picked when the window opens on anything else: the 3v3 row.

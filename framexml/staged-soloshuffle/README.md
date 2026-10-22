@@ -1,4 +1,13 @@
-# Solo Shuffle (shipped 2026-10-15)
+# Solo Shuffle (shipped 2026-10-15) - now Buffle Shuffle
+
+**Renamed Buffle Shuffle 2026-10-22, patch-enUS-A 1.00232** (the owner's call). Built from the
+live 1.00231 copies by `~/shuffle-rename-20261022/shuffle_rename.sh` on the server: ArenaFrame.lua
+(title, the "2v2/3v3 Buffle Shuffle" rows) -> `bf1252c1...`, BattlemasterList.dbc row 889 -> `6ed2e292...`,
+plus GameTips.dbc tip 17 and two comments in CenturionSquadFrames.lua. The DBC names were renamed by
+appending the new string and repointing the field (`dbc_restring.py`), so the old text is still in
+the string blocks, unreferenced. The servers' BattlemasterList.dbc got the same row-889 rename
+(`7cc2f5eb...`). The directory, the Lua globals (`CENTURION_SOLO_SHUFFLE_*`) and the server's code
+names keep the old name; the text below describes the files as first shipped.
 
 | file | archive | what |
 |---|---|---|

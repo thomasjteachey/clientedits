@@ -22,7 +22,7 @@
 -- Blizzard_ArenaUI.xml lays them out (patch-enUS-2). What is new is how they
 -- are grouped: one column per enemy squad under its name in its colour, since
 -- fifteen of them stacked would not fit the screen, and the block shrinks for
--- squads of four (90%) and five (80%). With only two teams (Solo Shuffle feeds
+-- squads of four (90%) and five (80%). With only two teams (Buffle Shuffle feeds
 -- these too, since arena1-5 cannot follow its re-dealt rounds) there is one
 -- enemy column and no header, exactly as the stock frames look. Health and mana text obey
 -- the party status-text option, as the stock bars do, and show on mouseover;
@@ -323,7 +323,7 @@ function CenturionSquadFrames_Layout()
 		return;
 	end
 
-	-- Two teams (a Solo Shuffle round) leave one enemy column, which is drawn
+	-- Two teams (a Buffle Shuffle round) leave one enemy column, which is drawn
 	-- the way the stock frames are: no team header over it.
 	local headerH = state.count > 2 and HEADER_H or 0;
 

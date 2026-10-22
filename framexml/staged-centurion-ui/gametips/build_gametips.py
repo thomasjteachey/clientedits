@@ -28,7 +28,7 @@ TIPS = [
     "Once an hour a treasure chest appears in the Gurubashi Arena. It disappears after five minutes, so be quick.",
     "The Battlegrounds tab shows a countdown to the next Gurubashi Arena chest.",
     "Mirri Twiceborn in the Gurubashi Arena will change your character's name or race, free of charge.",
-    "Dealer Rixa in the Gurubashi Arena queues you for Solo Shuffle: six rounds of 3v3, with the teams dealt again every round.",
+    "Dealer Rixa in the Gurubashi Arena queues you for Buffle Shuffle: six rounds of 3v3, with the teams dealt again every round.",
     # Character modes and hubs
     "World characters level up and roam Azeroth. Tournament characters skip the world and fight in battlegrounds and arenas with their own gear and queues.",
     "The word above a player's name tells you whether they are a World character, a Tournament character or a Bot. You can turn it off under Interface, AddOns, Centurion.",
