@@ -278,10 +278,75 @@ static int __cdecl Lua_Scan(void* L)
     return 1;
 }
 
+// The world frame and its DDC extents, as Scan reads them.
+static bool WorldFrame(BYTE*& wf, float& width, float& height)
+{
+    wf = kWorldFramePtr;
+    if (!wf || !*(void**)(wf + 0x7E20))
+        return false;                                // no camera yet
+    width = *(float*)(wf + 0x70) - *(float*)(wf + 0x68);
+    height = *(float*)(wf + 0x6C) - *(float*)(wf + 0x64);
+    return width > 0.0f && height > 0.0f;
+}
+
+// fx, fy, scale = CenturionUnitBar(0, x, y, z): a world point where the bars are
+// placed (fractions of the world frame; nothing behind the camera), and how big a
+// yard is there. CENTURION_Rift draws Summoner's Rift's turret range rings by it.
+static int ProjectPoint(void* L)
+{
+    BYTE* wf = nullptr;
+    float width = 0.0f, height = 0.0f;
+    if (!WorldFrame(wf, width, height))
+        return 0;
+    C3Vector point = { float(pLuaToNumber(L, 2)), float(pLuaToNumber(L, 3)), float(pLuaToNumber(L, 4)) };
+    C3Vector screen = { 0, 0, 0 };
+    DWORD flags = 0;
+    if (!((WorldToScreen_t)kWorldToScreen)(wf, &point, &screen, &flags))
+        return 0;
+    C3Vector above = point;
+    above.z += 1.0f;
+    C3Vector screenAbove = { 0, 0, 0 };
+    DWORD flagsAbove = 0;
+    float scale = 0.0f;
+    if (((WorldToScreen_t)kWorldToScreen)(wf, &above, &screenAbove, &flagsAbove))
+        scale = (screenAbove.y - screen.y) / height;
+    pLuaPushNumber(L, screen.x / width);
+    pLuaPushNumber(L, screen.y / height);
+    pLuaPushNumber(L, scale < 0.0f ? 0.0f : scale);
+    return 3;
+}
+
+// x, y, z = CenturionUnitBar(-1): the player's position in the world.
+static int PlayerPosition(void* L)
+{
+    unsigned __int64 const guid = ((GetActiveGuid_t)kGetActiveGuid)();
+    BYTE* player = guid ? (BYTE*)((ObjectPtr_t)kObjectPtr)(DWORD(guid), DWORD(guid >> 32), kTypeMaskUnit, 0, 0) : nullptr;
+    if (!player)
+        return 0;
+    float const* pos = (float const*)(player + kOff_PosX);
+    pLuaPushNumber(L, pos[0]);
+    pLuaPushNumber(L, pos[1]);
+    pLuaPushNumber(L, pos[2]);
+    return 3;
+}
+
 // fx, fy, health, reaction, scale, guid, isPlayer = CenturionUnitBar(i)
+// (0 and -1: ProjectPoint, PlayerPosition - no new thunk for them)
 static int __cdecl Lua_Bar(void* L)
 {
     int const i = int(pLuaToNumber(L, 1));
+    if (i == 0 || i == -1)
+    {
+        int pushed = 0;
+        __try {
+            pushed = i == 0 ? ProjectPoint(L) : PlayerPosition(L);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            pushed = 0;
+            if (g_faults++ < 5)
+                Log("%s faulted (0x%08lX)", i == 0 ? "project" : "position", GetExceptionCode());
+        }
+        return pushed;
+    }
     if (i < 1 || i > g_count)
         return 0;
     Bar const& b = g_bars[i - 1];
