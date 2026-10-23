@@ -42,3 +42,10 @@ is its output.
 
 The in-match enemy frames need nothing new: the server feeds a shuffle's two sides to
 `CenturionSquadFrames.lua` (staged-fourcorners) as two squads, re-sent every round.
+
+**Wins column (2026-10-23, patch-enUS-A 1.00241, from live 1.00240):** `CenturionSquadFrames.lua`
+(staged-fourcorners) `8921d337...` -> `ce9cbbca...` shows each player's rounds won as a "Wins"
+column on the shuffle's scoreboard, in the column an unrated arena leaves hidden (rating change),
+and widens the frame one column for it. Fed by the server's new `SQV:<squad>:<wins,...>` line
+(tc-lplus 57b0876201); without it the scoreboard is unchanged. Tests: squadframes_test.lua 67/67.
+Backups `~/patch-backups/patch-enUS-A.*.bak-shuffle-wins-1.00240`.

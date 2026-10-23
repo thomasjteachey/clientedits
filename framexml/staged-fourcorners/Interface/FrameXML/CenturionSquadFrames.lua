@@ -14,6 +14,8 @@
 --   SQH:<s>:<states>          the same members: <hp%>.<power%>.<power type>,
 --                             d (dead), s (stealthed), o (not here)
 --   SQW:<s> / SQW:-           the winning squad, or a draw
+--   SQV:<s>:<wins>            Buffle Shuffle: the same members' rounds won,
+--                             shown on the scoreboard as a Wins column
 --
 -- and asked for all of it with CCGAMEREQ SQUADS once the UI is up in an arena.
 --
@@ -69,6 +71,8 @@ local state = {
 	team = {},          -- [squad] = arena team name, "" in a skirmish
 	states = {},        -- [squad] = { token, ... } in roster order
 	byName = {},        -- name -> squad, for the scoreboard
+	wins = {},          -- [squad] = { rounds won, ... } in roster order (shuffle only)
+	winsByName = nil,   -- name -> rounds won, nil outside a shuffle
 	winner = nil,       -- squad number, "-" for a draw
 	pendingLayout = false,
 };
@@ -382,10 +386,30 @@ end
 
 -- ------------------------------------------------------------------ scoreboard
 
+-- A Buffle Shuffle's scoreboard gets a Wins column: rounds won so far. It
+-- borrows the rating-change column, which an unrated arena leaves hidden.
+CENTURION_SHUFFLE_WINS = "Wins";
+CENTURION_SHUFFLE_WINS_TOOLTIP = "Rounds won";
+
+local function ShowsWins()
+	if ( not state.active or not state.winsByName ) then
+		return false;
+	end
+	local isArena, isRegistered = IsActiveBattlefieldArena();
+	return isArena and not isRegistered;
+end
+
 -- After the stock update has coloured every row by side: recolour by squad.
 function CenturionSquadFrames_ColourScoreboard()
 	if ( not state.active or not WorldStateScoreFrame or not WorldStateScoreFrame:IsShown() ) then
 		return;
+	end
+
+	local showWins = ShowsWins();
+	if ( showWins ) then
+		WorldStateScoreFrameHonorGainedText:SetText(CENTURION_SHUFFLE_WINS);
+		WorldStateScoreFrameHonorGained.tooltip = CENTURION_SHUFFLE_WINS_TOOLTIP;
+		WorldStateScoreFrameHonorGained:Show();
 	end
 
 	local numScores = GetNumBattlefieldScores();
@@ -393,6 +417,12 @@ function CenturionSquadFrames_ColourScoreboard()
 	for i = 1, MAX_WORLDSTATE_SCORE_BUTTONS do
 		if ( offset + i <= numScores ) then
 			local nameButton = _G["WorldStateScoreButton"..i.."Name"];
+			if ( showWins ) then
+				local winsText = _G["WorldStateScoreButton"..i.."HonorGained"];
+				local wins = nameButton and nameButton.name and state.winsByName[nameButton.name];
+				winsText:SetText(wins and tostring(wins) or "");
+				winsText:Show();
+			end
 			local squad = nameButton and nameButton.name and state.byName[nameButton.name];
 			local c = squad and CENTURION_SQUAD_COLORS[squad];
 			if ( c ) then
@@ -429,6 +459,29 @@ if ( type(WorldStateScoreFrame_Update) == "function" ) then
 	hooksecurefunc("WorldStateScoreFrame_Update", CenturionSquadFrames_ColourScoreboard);
 end
 
+-- The Wins column needs one more column's width than an unrated arena gets.
+-- The same tail as WorldStateScoreFrame_Resize, on the wider frame.
+function CenturionSquadFrames_WidenScoreboard(width)
+	if ( width or not ShowsWins() ) then
+		return;
+	end
+	width = WorldStateScoreFrame:GetWidth() + WORLDSTATESCOREFRAME_COLUMN_SPACING;
+	WorldStateScoreFrame:SetWidth(width);
+	WorldStateScoreFrameTopBackground:SetWidth(width - 129);
+	WorldStateScoreFrameTopBackground:SetTexCoord(0, WorldStateScoreFrameTopBackground:GetWidth() / 256, 0, 1.0);
+	WorldStateScoreFrame.scrollBarButtonWidth = width - 165;
+	WorldStateScoreFrame.buttonWidth = width - 137;
+	WorldStateScoreScrollFrame:SetWidth(WorldStateScoreFrame.scrollBarButtonWidth);
+	local buttonWidth = WorldStateScoreScrollFrame:IsShown() and WorldStateScoreFrame.scrollBarButtonWidth or WorldStateScoreFrame.buttonWidth;
+	for i = 1, MAX_WORLDSTATE_SCORE_BUTTONS do
+		_G["WorldStateScoreButton"..i]:SetWidth(buttonWidth);
+	end
+end
+
+if ( type(WorldStateScoreFrame_Resize) == "function" ) then
+	hooksecurefunc("WorldStateScoreFrame_Resize", CenturionSquadFrames_WidenScoreboard);
+end
+
 -- ------------------------------------------------------------------ the feed
 
 local function Clear()
@@ -439,18 +492,26 @@ local function Clear()
 	state.team = {};
 	state.states = {};
 	state.byName = {};
+	state.wins = {};
+	state.winsByName = nil;
 	state.winner = nil;
 	CenturionSquadFrames_Layout();
 end
 
 local function RebuildNames()
-	local byName = {};
+	local byName, winsByName = {}, nil;
 	for squad, roster in pairs(state.roster) do
-		for _, member in ipairs(roster) do
+		local wins = state.wins[squad];
+		for index, member in ipairs(roster) do
 			byName[member.name] = squad;
+			if ( wins and wins[index] ) then
+				winsByName = winsByName or {};
+				winsByName[member.name] = wins[index];
+			end
 		end
 	end
 	state.byName = byName;
+	state.winsByName = winsByName;
 end
 
 function CenturionSquadFrames_OnLine(line)
@@ -486,6 +547,8 @@ function CenturionSquadFrames_OnLine(line)
 		state.roster[squad] = roster;
 		state.team[squad] = team;
 		state.states[squad] = {};
+		-- Wins come in the roster's order, so they follow it out (SQV resends).
+		state.wins[squad] = nil;
 		RebuildNames();
 		CenturionSquadFrames_Layout();
 		CenturionSquadFrames_PaintSquad(squad);
@@ -502,6 +565,24 @@ function CenturionSquadFrames_OnLine(line)
 		end
 		state.states[statesSquad] = list;
 		CenturionSquadFrames_PaintSquad(statesSquad);
+		return;
+	end
+
+	local winsSquad, wins = strmatch(line, "^SQV:(%d):(.*)$");
+	if ( winsSquad ) then
+		winsSquad = tonumber(winsSquad);
+		local list = {};
+		for token in string.gmatch(wins, "[^,]+") do
+			list[#list + 1] = tonumber(token) or 0;
+		end
+		local hadWins = state.winsByName ~= nil;
+		state.wins[winsSquad] = list;
+		RebuildNames();
+		-- The column appears with the first wins line: size the frame for it.
+		if ( not hadWins and state.winsByName and WorldStateScoreFrame and WorldStateScoreFrame:IsShown() ) then
+			WorldStateScoreFrame_Resize();
+		end
+		CenturionSquadFrames_ColourScoreboard();
 		return;
 	end
 

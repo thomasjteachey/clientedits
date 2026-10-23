@@ -91,6 +91,23 @@ local winner = nil
 function GetBattlefieldWinner() return winner end
 local stockUpdates = 0
 function WorldStateScoreFrame_Update() stockUpdates = stockUpdates + 1 end
+-- the Wins column (Buffle Shuffle) borrows the rating-change column
+MOCK.SetWidth = function(s, w) s.width = w end
+MOCK.GetWidth = function(s) return s.width or 0 end
+MOCK.SetTexCoord = function() end
+WORLDSTATESCOREFRAME_COLUMN_SPACING = 76
+WorldStateScoreFrameHonorGained = obj("Frame")
+WorldStateScoreFrameHonorGainedText = obj("FontString")
+WorldStateScoreFrameTopBackground = obj("Texture")
+for i = 1, 3 do
+	_G["WorldStateScoreButton" .. i] = obj("Button")
+	_G["WorldStateScoreButton" .. i .. "HonorGained"] = obj("FontString")
+	_G["WorldStateScoreButton" .. i .. "HonorGained"].shown = false
+end
+local arenaRegistered = false
+function IsActiveBattlefieldArena() return true, arenaRegistered end
+local resizes = 0
+function WorldStateScoreFrame_Resize(width) resizes = resizes + 1; WorldStateScoreFrame:SetWidth(width or 400); return width or 400 end
 
 assert(loadfile(MODULE))()
 check(hooks.WorldStateScoreFrame_Update, "scoreboard hooked")
@@ -223,6 +240,47 @@ line("SQ:-")
 line("SQ:0:4")
 line("SQR:2::Papa,1")
 check(group(2).header.shown == true and row(2, 1).point[5] == -16, "four teams: header back, frames under it")
+
+-- Buffle Shuffle: SQV feeds each member's rounds won into the scoreboard's Wins column
+line("SQ:-")
+line("SQ:0:2")
+WorldStateScoreFrame.shown = true
+WorldStateScoreFrameHonorGained.shown = false
+WorldStateScoreFrame_Update()
+check(not WorldStateScoreFrameHonorGained.shown, "no Wins column before any wins arrive")
+line("SQR:0::Alpha,1;Me,4")
+line("SQR:1::Delta,4")
+resizes = 0
+line("SQV:0:3,2")
+check(resizes == 1 and WorldStateScoreFrame.width == 400 + 76, "first wins line widens the frame by a column: " .. tostring(WorldStateScoreFrame.width))
+check(WorldStateScoreButton1.width == 400 + 76 - 165, "rows widened with it: " .. tostring(WorldStateScoreButton1.width))
+line("SQV:1:1")
+check(resizes == 1, "later wins lines do not resize again")
+WorldStateScoreFrame_Update()
+check(WorldStateScoreFrameHonorGained.shown and WorldStateScoreFrameHonorGainedText.text == "Wins", "Wins header shown")
+check(WorldStateScoreButton1HonorGained.text == "3" and WorldStateScoreButton1HonorGained.shown, "Alpha 3 wins: " .. tostring(WorldStateScoreButton1HonorGained.text))
+check(WorldStateScoreButton2HonorGained.text == "1", "Delta 1 win: " .. tostring(WorldStateScoreButton2HonorGained.text))
+check(WorldStateScoreButton3HonorGained.text == "2", "Me 2 wins: " .. tostring(WorldStateScoreButton3HonorGained.text))
+-- a new round re-deals the rosters: wins follow the new order once SQV resends
+line("SQR:0::Me,4;Delta,4")
+line("SQR:1::Alpha,1")
+check(CenturionSquadFrames_State.winsByName == nil, "roster change drops wins until resent")
+line("SQV:0:3,2")
+line("SQV:1:4")
+WorldStateScoreFrame_Update()
+check(WorldStateScoreButton1HonorGained.text == "4" and WorldStateScoreButton3HonorGained.text == "3" and WorldStateScoreButton2HonorGained.text == "2", "wins re-paired by name after a re-deal")
+-- a rated arena keeps its rating column
+arenaRegistered = true
+WorldStateScoreFrameHonorGainedText.text = "Rating"
+WorldStateScoreFrame_Update()
+check(WorldStateScoreFrameHonorGainedText.text == "Rating", "rated arena untouched")
+arenaRegistered = false
+WorldStateScoreFrame_Resize()
+check(WorldStateScoreFrame.width == 476, "resize keeps the extra column")
+line("SQ:-")
+WorldStateScoreFrame_Resize()
+check(WorldStateScoreFrame.width == 400, "no extra column once the shuffle is over")
+WorldStateScoreFrame.shown = false
 
 -- outside an arena the frames clear themselves
 instanceType = "none"
