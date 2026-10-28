@@ -1,0 +1,5 @@
+## Interface: 30300
+## Title: CENTURION All-Star
+## Notes: Hides the spellbook and skill lines an All-Star class swap prints.
+## Author: Centurion
+CENTURION_AllStar.lua

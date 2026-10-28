@@ -1,0 +1,10 @@
+{
+  "name": "patch-enUS-A",
+  "change": "allstar",
+  "stage": "/home/brokilodeluxe/allstar-20261028/client/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\ArenaFrame.lua": "bf1252c1aed2e58729feccd7b3e9aa03",
+    "DBFilesClient\\BattlemasterList.dbc": "6ed2e29245e4ed1cd78271eda46db9f7"
+  }
+}
