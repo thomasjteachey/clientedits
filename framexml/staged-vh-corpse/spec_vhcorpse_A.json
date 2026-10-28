@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "vh-corpse",
+  "stage": "/tmp/centmode/vh-corpse/stage",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\WorldStateFrame.lua": "4dd3602dd7d7d160523c326b29bec31c"
+  }
+}
