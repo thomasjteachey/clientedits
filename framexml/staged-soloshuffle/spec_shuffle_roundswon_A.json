@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "shuffle-roundswon",
+  "stage": "/tmp/centmode/stage-shuffle-roundswon/A",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\CenturionSquadFrames.lua": "ce9cbbcafe88ed04191dbe88b16c5f21"
+  }
+}

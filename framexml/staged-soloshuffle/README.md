@@ -49,3 +49,16 @@ column on the shuffle's scoreboard, in the column an unrated arena leaves hidden
 and widens the frame one column for it. Fed by the server's new `SQV:<squad>:<wins,...>` line
 (tc-lplus 57b0876201); without it the scoreboard is unchanged. Tests: squadframes_test.lua 67/67.
 Backups `~/patch-backups/patch-enUS-A.*.bak-shuffle-wins-1.00240`.
+
+**Rounds Won next to the names (2026-10-28, patch-enUS-A 1.00255, from live 1.00254):** the owner
+read the far-right "Wins" column as missing and the Killing Blows column as rounds won (in a 3v3
+every round is exactly three deaths, so the lobby's killing blows total its round wins). Now
+`Name | Rounds Won | Killing Blows | Damage Done | Healing Done`: the hook anchors the borrowed
+column to the names (+4) and Killing Blows to it (-5), in that order (the other order is an
+anchor loop while the column still trails Healing Done), retitles it "Rounds\nWon" like the
+stock two-line headers, and clears its sortType (the client cannot sort by it). The stock
+update re-anchors both columns every refresh, so the next arena or battleground gets its own
+layout back. `CenturionSquadFrames.lua` `ce9cbbca...` -> `624d3191...`; spec
+`spec_shuffle_roundswon_A.json`. Tests: squadframes_test.lua 73/73 (the 1.00254 file fails only
+the 5 new checks); also run against the real live WorldStateFrame.lua with an anchor-loop
+check. Verified over HTTP. Backups `~/patch-backups/patch-enUS-A.*.bak-shuffle-roundswon-1.00254`.

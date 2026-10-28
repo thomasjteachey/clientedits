@@ -15,7 +15,7 @@
 --                             d (dead), s (stealthed), o (not here)
 --   SQW:<s> / SQW:-           the winning squad, or a draw
 --   SQV:<s>:<wins>            Buffle Shuffle: the same members' rounds won,
---                             shown on the scoreboard as a Wins column
+--                             shown on the scoreboard as a Rounds Won column
 --
 -- and asked for all of it with CCGAMEREQ SQUADS once the UI is up in an arena.
 --
@@ -386,9 +386,10 @@ end
 
 -- ------------------------------------------------------------------ scoreboard
 
--- A Buffle Shuffle's scoreboard gets a Wins column: rounds won so far. It
--- borrows the rating-change column, which an unrated arena leaves hidden.
-CENTURION_SHUFFLE_WINS = "Wins";
+-- A Buffle Shuffle's scoreboard gets a Rounds Won column right after the
+-- names, ahead of Killing Blows. It borrows the rating-change column, which
+-- an unrated arena leaves hidden.
+CENTURION_SHUFFLE_WINS = "Rounds\nWon";
 CENTURION_SHUFFLE_WINS_TOOLTIP = "Rounds won";
 
 local function ShowsWins()
@@ -407,8 +408,16 @@ function CenturionSquadFrames_ColourScoreboard()
 
 	local showWins = ShowsWins();
 	if ( showWins ) then
+		-- The stock update anchors Killing Blows to the names and this column
+		-- after Healing Done, every time, so any other match gets its own
+		-- layout back. Move this one first: Killing Blows hung from it while
+		-- it still trails Healing Done would be an anchor loop.
+		WorldStateScoreFrameHonorGained:SetPoint("LEFT", "WorldStateScoreFrameName", "RIGHT", 4, 0);
+		WorldStateScoreFrameKB:SetPoint("LEFT", "WorldStateScoreFrameHonorGained", "RIGHT", -5, 0);
 		WorldStateScoreFrameHonorGainedText:SetText(CENTURION_SHUFFLE_WINS);
 		WorldStateScoreFrameHonorGained.tooltip = CENTURION_SHUFFLE_WINS_TOOLTIP;
+		-- The client sorts by its own columns only, and rounds won is not one.
+		WorldStateScoreFrameHonorGained.sortType = nil;
 		WorldStateScoreFrameHonorGained:Show();
 	end
 
@@ -459,7 +468,7 @@ if ( type(WorldStateScoreFrame_Update) == "function" ) then
 	hooksecurefunc("WorldStateScoreFrame_Update", CenturionSquadFrames_ColourScoreboard);
 end
 
--- The Wins column needs one more column's width than an unrated arena gets.
+-- Rounds Won needs one more column's width than an unrated arena gets.
 -- The same tail as WorldStateScoreFrame_Resize, on the wider frame.
 function CenturionSquadFrames_WidenScoreboard(width)
 	if ( width or not ShowsWins() ) then

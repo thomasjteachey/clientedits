@@ -98,6 +98,12 @@ MOCK.SetTexCoord = function() end
 WORLDSTATESCOREFRAME_COLUMN_SPACING = 76
 WorldStateScoreFrameHonorGained = obj("Frame")
 WorldStateScoreFrameHonorGainedText = obj("FontString")
+WorldStateScoreFrameKB = obj("Frame")
+-- the order the two headers are re-anchored in (Killing Blows first would loop)
+local anchorLog = {}
+for _, f in ipairs({ { WorldStateScoreFrameHonorGained, "RoundsWon" }, { WorldStateScoreFrameKB, "KB" } }) do
+	rawset(f[1], "SetPoint", function(s, ...) s.point = { ... }; anchorLog[#anchorLog + 1] = f[2] end)
+end
 WorldStateScoreFrameTopBackground = obj("Texture")
 for i = 1, 3 do
 	_G["WorldStateScoreButton" .. i] = obj("Button")
@@ -241,13 +247,14 @@ line("SQ:0:4")
 line("SQR:2::Papa,1")
 check(group(2).header.shown == true and row(2, 1).point[5] == -16, "four teams: header back, frames under it")
 
--- Buffle Shuffle: SQV feeds each member's rounds won into the scoreboard's Wins column
+-- Buffle Shuffle: SQV feeds each member's rounds won into the scoreboard's Rounds Won column
 line("SQ:-")
 line("SQ:0:2")
 WorldStateScoreFrame.shown = true
 WorldStateScoreFrameHonorGained.shown = false
 WorldStateScoreFrame_Update()
-check(not WorldStateScoreFrameHonorGained.shown, "no Wins column before any wins arrive")
+check(not WorldStateScoreFrameHonorGained.shown, "no Rounds Won column before any wins arrive")
+check(#anchorLog == 0, "columns left where they are before any wins arrive")
 line("SQR:0::Alpha,1;Me,4")
 line("SQR:1::Delta,4")
 resizes = 0
@@ -256,8 +263,15 @@ check(resizes == 1 and WorldStateScoreFrame.width == 400 + 76, "first wins line 
 check(WorldStateScoreButton1.width == 400 + 76 - 165, "rows widened with it: " .. tostring(WorldStateScoreButton1.width))
 line("SQV:1:1")
 check(resizes == 1, "later wins lines do not resize again")
+anchorLog = {}
+WorldStateScoreFrameHonorGained.sortType = "cp"
 WorldStateScoreFrame_Update()
-check(WorldStateScoreFrameHonorGained.shown and WorldStateScoreFrameHonorGainedText.text == "Wins", "Wins header shown")
+check(WorldStateScoreFrameHonorGained.shown and WorldStateScoreFrameHonorGainedText.text == "Rounds\nWon", "Rounds Won header shown: " .. tostring(WorldStateScoreFrameHonorGainedText.text))
+local rw, kb = rawget(WorldStateScoreFrameHonorGained, "point"), rawget(WorldStateScoreFrameKB, "point")
+check(rw and rw[1] == "LEFT" and rw[2] == "WorldStateScoreFrameName" and rw[3] == "RIGHT" and rw[4] == 4 and rw[5] == 0, "Rounds Won right after the names")
+check(kb and kb[1] == "LEFT" and kb[2] == "WorldStateScoreFrameHonorGained" and kb[3] == "RIGHT" and kb[4] == -5 and kb[5] == 0, "Killing Blows right after Rounds Won")
+check(anchorLog[1] == "RoundsWon" and anchorLog[2] == "KB", "Rounds Won moved before Killing Blows hangs from it: " .. table.concat(anchorLog, ","))
+check(rawget(WorldStateScoreFrameHonorGained, "sortType") == nil, "Rounds Won header does not sort by bonus honor")
 check(WorldStateScoreButton1HonorGained.text == "3" and WorldStateScoreButton1HonorGained.shown, "Alpha 3 wins: " .. tostring(WorldStateScoreButton1HonorGained.text))
 check(WorldStateScoreButton2HonorGained.text == "1", "Delta 1 win: " .. tostring(WorldStateScoreButton2HonorGained.text))
 check(WorldStateScoreButton3HonorGained.text == "2", "Me 2 wins: " .. tostring(WorldStateScoreButton3HonorGained.text))
@@ -272,8 +286,10 @@ check(WorldStateScoreButton1HonorGained.text == "4" and WorldStateScoreButton3Ho
 -- a rated arena keeps its rating column
 arenaRegistered = true
 WorldStateScoreFrameHonorGainedText.text = "Rating"
+anchorLog = {}
 WorldStateScoreFrame_Update()
 check(WorldStateScoreFrameHonorGainedText.text == "Rating", "rated arena untouched")
+check(#anchorLog == 0, "rated arena columns not moved")
 arenaRegistered = false
 WorldStateScoreFrame_Resize()
 check(WorldStateScoreFrame.width == 476, "resize keeps the extra column")
