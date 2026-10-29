@@ -79,7 +79,60 @@ local state = {
 	page = 1,
 	selected = nil,             -- replay id
 	replayError = nil,
+
+	-- The Battlemaster (owner 2026-10-29: "add a similar bg frame with a bg
+	-- battlemaster"): the same window, for every battleground.
+	kind = "arena",             -- which window is up: "arena" or "bg"
+	bgPending = false,          -- BGQUEUE:MASTER seen; the next battleground list is ours
+	bgGuid = nil,               -- the battlemaster spoken to, as the server named it
+	bgPreselect = nil,          -- its own battleground
+	bgs = {},                   -- { id, mapId, perTeam, minLevel, maxLevel, sides, name }
+	bgLoading = nil,
+	bgSel = nil,                -- bgTypeId picked
+	bgScroll = 0,
+	side = "N",                 -- N / A / H, for the battlegrounds that take a side
 }
+
+local BG_RANDOM = 32
+local BG_ICONS = "Interface\\Icons\\"
+
+-- What each battleground is about, in a line; anything else gets a plain one.
+local BG_INFO = {
+	[1]   = { icon = "Achievement_BG_winAV",  goal = "Kill the general",
+	          text = "Two armies meet in the Alterac Mountains. Take towers and graveyards, then storm the enemy general's keep." },
+	[2]   = { icon = "Achievement_BG_winWSG", goal = "Capture the flag",
+	          text = "Steal the enemy's flag from their base and carry it home to yours. Three captures win." },
+	[3]   = { icon = "Achievement_BG_winAB",  goal = "Hold the bases",
+	          text = "Five resource nodes across Arathi Basin. The more of them your side holds, the faster it wins." },
+	[7]   = { icon = "Achievement_BG_winEOS", goal = "Bases and the flag",
+	          text = "Hold the four towers and carry the flag from the centre of the Eye of the Storm to one of them." },
+	[9]   = { icon = "Achievement_BG_winSOA", goal = "Siege",
+	          text = "One side drives siege engines up the shore and through the gates; then the sides change places." },
+	[30]  = { icon = "Achievement_BG_winbyten", goal = "Siege",
+	          text = "Take the island's workshops, docks and hangar, break into the enemy keep and defeat its leader." },
+	[BG_RANDOM] = { icon = "INV_BannerPVP_02", goal = "Any battleground",
+	          text = "Any of the battlegrounds, picked when your match is made." },
+	[100] = { icon = "Spell_Holy_Resurrection", goal = "Small battle",
+	          text = "A small battle fought in the Scarlet Monastery's chapel." },
+	[101] = { icon = "Achievement_Zone_Blackrock_01", goal = "Battle",
+	          text = "A battle for the throne room deep in Blackrock Mountain." },
+	[102] = { icon = "Achievement_Arena_5v5_7", goal = "Battle",
+	          text = "A large battle in the halls of the Obsidian Colosseum." },
+	[104] = { icon = "INV_BannerPVP_01", goal = "Deathmatch",
+	          text = "A deathmatch across the sands of Tanaris." },
+	[105] = { icon = "Achievement_Zone_CrystalSong_01", goal = "Survival",
+	          text = "Hold the Violet Hold together, wave after wave." },
+	[106] = { icon = "INV_BannerPVP_03", goal = "Hold the orbs",
+	          text = "Seize the temple's orbs and keep them. The longer you hold one, and the nearer the centre, the more it scores." },
+	[107] = { icon = "Achievement_BG_winbyten", goal = "Destroy the Nexus",
+	          text = "Three lanes of turrets and minions. Push through them and destroy the enemy Nexus." },
+	[108] = { icon = "Achievement_BG_captureflag_WSG", goal = "Capture the flag",
+	          text = "Capture the flag across the Twilight Highlands. Three captures win." },
+	[120] = { icon = "Achievement_BG_takeXflags_AB", goal = "Hold the bases",
+	          text = "Hold the lighthouse, the mines and the waterworks of Gilneas; held bases earn resources." },
+}
+local BG_FALLBACK_SCREEN = "Interface\\Glues\\LoadingScreens\\LoadScreenPvpBattleground"
+local SIDE_NAME = { N = "Any side", A = "Alliance", H = "Horde" }
 
 ------------------------------------------------------------------
 -- small helpers
@@ -401,7 +454,9 @@ local function InitTypeMenu(self, level)
 end
 UIDropDownMenu_Initialize(dd, InitTypeMenu)
 
-local CATEGORY_ROWS = 5
+-- Arena brackets sit under the type menu; the Battlemaster's battlegrounds
+-- fill the column from the top and scroll past CATEGORY_ROWS.
+local CATEGORY_ROWS = 16
 local categoryButtons = {}
 for i = 1, CATEGORY_ROWS do
 	local b = CreateFrame("Button", nil, am)
@@ -444,6 +499,13 @@ for i = 1, CATEGORY_ROWS do
 	end)
 	b:Hide()
 	categoryButtons[i] = b
+end
+
+local function PlaceCategories(top)
+	for i, b in ipairs(categoryButtons) do
+		b:ClearAllPoints()
+		At(b, 21, top + (i - 1) * 25)
+	end
 end
 
 -- The "Arena bot matches" box, at the foot of the list on every unrated page.
@@ -660,6 +722,41 @@ local function SetHeading(y, text, sub)
 		subheading:Show()
 	else
 		subheading:Hide()
+	end
+end
+
+-- The side a battleground that takes one is queued for (Whitemane's three):
+-- three boxes that act as one choice.
+local SIDES = { "N", "A", "H" }
+local sideButtons = {}
+for i, key in ipairs(SIDES) do
+	local b = CreateFrame("CheckButton", "CenturionArenaMasterSide" .. i, poster, "UICheckButtonTemplate")
+	b:SetWidth(24)
+	b:SetHeight(24)
+	b.key = key
+	b.text = b:CreateFontString(nil, "ARTWORK")
+	b.text:SetFontObject(fontInk11)
+	b.text:SetPoint("LEFT", b, "RIGHT", 2, 1)
+	b.text:SetText(SIDE_NAME[key])
+	b:SetScript("OnClick", function(self)
+		PlaySound("igMainMenuOptionCheckBoxOn")
+		state.side = self.key
+		Draw()
+	end)
+	b:Hide()
+	sideButtons[i] = b
+end
+
+local function SetSides(y)
+	for i, b in ipairs(sideButtons) do
+		if y then
+			b:ClearAllPoints()
+			b:SetPoint("TOPLEFT", poster, "TOPLEFT", PW / 2 - 190 + (i - 1) * 140, -y)
+			b:SetChecked(state.side == b.key)
+			b:Show()
+		else
+			b:Hide()
+		end
 	end
 end
 
@@ -1559,7 +1656,148 @@ local function ShowAll(list, show)
 	end
 end
 
+------------------------------------------------------------------
+-- the Battlemaster: every battleground, the same window
+------------------------------------------------------------------
+-- Random first, the rest as the server listed them.
+local function BgRows()
+	local rows = {}
+	for _, bg in ipairs(state.bgs) do
+		if bg.id == BG_RANDOM then
+			table.insert(rows, 1, bg)
+		else
+			table.insert(rows, bg)
+		end
+	end
+	return rows
+end
+
+local function JoinBattleground(bg, group)
+	PlaySound("igMainMenuOptionCheckBoxOn")
+	local side = bg.sides and state.side or "N"
+	Send(string.format("BGMASTER:JOIN:%s:%d:%d:%s", state.bgGuid or "0", bg.id, group and 1 or 0, side))
+	am:Hide()
+end
+
+local function DrawBattlemaster()
+	title:SetText("Battlemaster")
+	typeLabel:Hide()
+	dd:Hide()
+	bots:Hide()
+	ShowAll(replayLeft, false)
+	replaysFrame:Hide()
+	PlaceCategories(24)
+
+	local rows = BgRows()
+	local selIndex = 1
+	for i, bg in ipairs(rows) do
+		if bg.id == state.bgSel then
+			selIndex = i
+		end
+	end
+	local bg = rows[selIndex]
+	state.bgSel = bg and bg.id or nil
+
+	-- The list scrolls with the wheel; opening, or a pick, brings the picked
+	-- row into view.
+	local maxScroll = math.max(0, #rows - CATEGORY_ROWS)
+	if state.bgFollow then
+		state.bgFollow = false
+		if selIndex - state.bgScroll > CATEGORY_ROWS then
+			state.bgScroll = selIndex - CATEGORY_ROWS
+		elseif selIndex <= state.bgScroll then
+			state.bgScroll = selIndex - 1
+		end
+	end
+	state.bgScroll = math.max(0, math.min(maxScroll, state.bgScroll))
+	for i, b in ipairs(categoryButtons) do
+		local index = i + state.bgScroll
+		local row = rows[index]
+		if row then
+			b.row = index
+			local picked = index == selIndex
+			-- Long names drop to the small font, then lose a leading "The"
+			-- ("Obsidian Colosseum"), clear of the team size beside them.
+			local big = picked and GameFontHighlight or GameFontNormal
+			local small = picked and GameFontHighlightSmall or GameFontNormalSmall
+			if not FitText(b.label, row.name, 104, big, small) then
+				FitText(b.label, (string.gsub(row.name, "^The ", "")), 104, big, small)
+			end
+			b.count:SetText(row.perTeam > 0 and tostring(row.perTeam) or "")
+			if picked then b.sel:Show() else b.sel:Hide() end
+			b:Show()
+		else
+			b:Hide()
+		end
+	end
+
+	poster:Show()
+	HidePortraits()
+	HideThumbs()
+	if not bg then
+		plateText:SetText("Battlegrounds")
+		DrawPoster({
+			banner = BG_FALLBACK_SCREEN, cy = 0.5,
+			icon = BG_ICONS .. "INV_BannerPVP_02",
+			title = "Battlegrounds",
+			sub = "",
+			message = "No battleground is open to you right now.",
+		})
+		SetSides(nil)
+		status:SetText("")
+		SetFootButtons({})
+		return
+	end
+
+	local info = BG_INFO[bg.id] or {}
+	local maps = CENTURION_ArenaMaster_BgMaps or {}
+	local art = maps[bg.mapId] and maps[bg.mapId].screen
+	if not art or art == "" or bg.id == BG_RANDOM then
+		art = BG_FALLBACK_SCREEN
+	end
+	plateText:SetText(bg.name)
+	local levels = bg.minLevel == bg.maxLevel and tostring(bg.minLevel) or (bg.minLevel .. "-" .. bg.maxLevel)
+	DrawPoster({
+		banner = art, cy = 0.5,
+		icon = BG_ICONS .. (info.icon or "INV_BannerPVP_01"),
+		title = bg.name,
+		small = string.len(bg.name) > 22,
+		sub = string.format("%d vs %d  -  levels %s", bg.perTeam, bg.perTeam, levels),
+		body = info.text or "A battleground: two sides, one objective.",
+		facts = { { "Team size", bg.perTeam .. " players" }, { "Levels", levels },
+			{ "Objective", info.goal or "Win" } },
+	})
+	if bg.sides then
+		SetHeading(308, "Side")
+		SetSides(320)
+	else
+		SetSides(nil)
+	end
+
+	-- A party is capped by the battleground's MaxGroupSize as well as by a
+	-- side (5 for Alterac Valley, Isle of Conquest and Random).
+	local cap = bg.groupCap or bg.perTeam
+	local canGroup, why = GroupJoin(cap)
+	local buttons = {}
+	if cap > 1 then
+		table.insert(buttons, { "Join as Group", 120, canGroup, function() JoinBattleground(bg, true) end })
+	end
+	table.insert(buttons, { "Join Battle", 120, true, function() JoinBattleground(bg, false) end })
+	status:SetText(why)
+	SetFootButtons(buttons)
+end
+
 function Draw()
+	if state.kind == "bg" then
+		DrawBattlemaster()
+		return
+	end
+	title:SetText("Arena Master")
+	typeLabel:Show()
+	dd:Show()
+	PlaceCategories(78)
+	SetSides(nil)
+
 	local mode = MODE[state.mode]
 	UIDropDownMenu_SetText(dd, mode.name)
 
@@ -1634,6 +1872,16 @@ function SetMode(key)
 end
 
 function SetBracket(row)
+	if state.kind == "bg" then
+		local bg = BgRows()[row]
+		if bg and bg.id ~= state.bgSel then
+			state.bgSel = bg.id
+			state.side = "N"
+		end
+		state.bgFollow = true
+		Draw()
+		return
+	end
 	if state.mode == "P" then
 		local list = row == 2 and "FAV" or "RECENT"
 		state.page = 1
@@ -1663,11 +1911,11 @@ local function FirstAvailable()
 end
 
 local function Open()
+	state.kind = "arena"
 	state.mode = FirstAvailable()
 	state.replays = { RECENT = nil, FAV = nil }
 	state.selected = nil
 	state.page = 1
-	rosterAsked = {}
 	Send("ARENABOTS")
 	if state.mode == "P" then
 		RequestReplays(state.list or "RECENT")
@@ -1677,23 +1925,44 @@ local function Open()
 	Draw()
 end
 
+-- The Battlemaster opens on its own battleground (Random first in the list).
+local function OpenBattlemaster()
+	state.kind = "bg"
+	state.bgSel = state.bgPreselect
+	state.side = "N"
+	state.bgScroll = 0
+	state.bgFollow = true
+	PlaySound("igCharacterInfoOpen")
+	am:Show()
+	Draw()
+end
+
 am:SetScript("OnHide", function()
 	state.pending = false
+	state.bgPending = false
 	CloseDropDownMenus()
 	PlaySound("igCharacterInfoClose")
 end)
 
--- Put away the stock window on the frame after it showed: hiding it from
--- inside its own ShowUIPanel would leave the panel layout half done.
+am:EnableMouseWheel(true)
+am:SetScript("OnMouseWheel", function(self, delta)
+	if state.kind == "bg" then
+		state.bgScroll = state.bgScroll - delta
+		Draw()
+	end
+end)
+
+-- Put away the stock window (ArenaFrame, or the battleground list) on the
+-- frame after it showed: hiding it from inside its own ShowUIPanel would leave
+-- the panel layout half done.
 am:SetScript("OnUpdate", function()
 	if hideStock then
+		local stock = hideStock
 		hideStock = false
-		if ArenaFrame and ArenaFrame:IsShown() then
-			HideUIPanel(ArenaFrame)
+		if stock:IsShown() then
+			HideUIPanel(stock)
 		end
-		if ArenaFrame then
-			ArenaFrame:SetAlpha(1)
-		end
+		stock:SetAlpha(1)
 	end
 end)
 
@@ -1704,8 +1973,20 @@ if ArenaFrame then
 		end
 		state.pending = false
 		self:SetAlpha(0)
-		hideStock = true
+		hideStock = self
 		Open()
+	end)
+end
+
+if BattlefieldFrame then
+	BattlefieldFrame:HookScript("OnShow", function(self)
+		if not state.bgPending then
+			return
+		end
+		state.bgPending = false
+		self:SetAlpha(0)
+		hideStock = self
+		OpenBattlemaster()
 	end)
 end
 
@@ -1833,6 +2114,45 @@ local function OnServer(message)
 	end
 	local parts = Split(message, ":")
 	local head = parts[1]
+	-- BGQUEUE:MASTER:<battlemaster guid>:<its battleground>, then its list:
+	-- BG:BEGIN, BG:B:<id>:<mapId>:<perTeam>:<minLevel>:<maxLevel>:<sides>:<name>, BG:END:<n>.
+	if head == "BGQUEUE" and parts[2] == "MASTER" then
+		state.bgPending = true
+		state.bgGuid = parts[3]
+		state.bgPreselect = tonumber(parts[4])
+		return
+	end
+	if head == "BG" then
+		local what = parts[2]
+		if what == "BEGIN" then
+			state.bgLoading = {}
+		elseif what == "B" and state.bgLoading then
+			local id = tonumber(parts[3])
+			if id then
+				-- A server that sends the party cap (BattlemasterList
+				-- MaxGroupSize, at most a side) puts it before the name.
+				local perTeam = tonumber(parts[5]) or 0
+				local cap = #parts >= 10 and tonumber(parts[9])
+				table.insert(state.bgLoading, {
+					id = id,
+					mapId = tonumber(parts[4]) or 0,
+					perTeam = perTeam,
+					groupCap = cap or perTeam,
+					minLevel = tonumber(parts[6]) or 0,
+					maxLevel = tonumber(parts[7]) or 0,
+					sides = parts[8] == "1",
+					name = table.concat(parts, ":", cap and 10 or 9),
+				})
+			end
+		elseif what == "END" then
+			state.bgs = state.bgLoading or {}
+			state.bgLoading = nil
+			if am:IsShown() and state.kind == "bg" then
+				Draw()
+			end
+		end
+		return
+	end
 	if head == "AM" then
 		local what = parts[2]
 		if what == "MODES" then
@@ -1884,10 +2204,11 @@ listener:SetScript("OnEvent", function(self, event, prefix, message)
 	end
 	if event == "PLAYER_ENTERING_WORLD" then
 		state.pending = false
+		state.bgPending = false
 		am:Hide()
 		return
 	end
-	if am:IsShown() and state.mode ~= "P" then
+	if am:IsShown() and (state.kind == "bg" or state.mode ~= "P") then
 		Draw()
 	end
 end)

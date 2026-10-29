@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "bg-loading-screens",
+  "stage": "/tmp/centmode/bgscreens/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "DBFilesClient\\Map.dbc": "281ee1e3b8e12bd3f139fd4ee9779655"
+  }
+}

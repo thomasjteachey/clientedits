@@ -234,6 +234,9 @@ LOCALIZED_CLASS_NAMES_FEMALE = LOCALIZED_CLASS_NAMES_MALE
 ------------------------------------------------------------------ the stock arena window
 ArenaFrame = CreateFrame("Frame", "ArenaFrame", UIParent)
 ArenaFrame._shown = false
+-- and the stock battleground list (BATTLEFIELDS_SHOW for a battleground)
+BattlefieldFrame = CreateFrame("Frame", "BattlefieldFrame", UIParent)
+BattlefieldFrame._shown = false
 function ShowUIPanel(f)
 	f._shown = true
 	if f._scripts.OnShow then f._scripts.OnShow(f) end

@@ -18,7 +18,8 @@ ADDON = os.path.join(AM, 'addon', 'CENTURION_ArenaMaster')
 lua = lupa.LuaRuntime(unpack_returned_tuples=True)
 g = lua.globals()
 for f in (os.path.join(BB, 'wowmock.lua'), os.path.join(BB, 'wowmock_ext.lua'), os.path.join(HERE, 'amock.lua'),
-          os.path.join(ADDON, 'ArenaMaps.lua'), os.path.join(ADDON, 'CENTURION_ArenaMaster.lua')):
+          os.path.join(ADDON, 'ArenaMaps.lua'), os.path.join(ADDON, 'BgMaps.lua'),
+          os.path.join(ADDON, 'CENTURION_ArenaMaster.lua')):
     lua.execute(open(f, encoding='utf-8').read())
 mock = g.MOCK
 am = g.CenturionArenaMaster
@@ -352,6 +353,126 @@ check(enabled(button_labelled('Join Battle')), 'the skirmish still joins')
 dump('7_standard_no_team')
 check(not pick('All-Star'), 'a disabled mode cannot be picked')
 g.CloseDropDownMenus()
+am.Hide(am)
+
+# 8. the Battlemaster: every battleground, the same window -------------------------------
+MASTER_GUID = '17379391051418026151'
+BG_LIST = ['BG:BEGIN',
+           'BG:B:2:489:10:10:80:0:Warsong Gulch', 'BG:B:3:529:15:10:60:0:Arathi Basin',
+           'BG:B:1:30:40:60:69:0:Alterac Valley', 'BG:B:7:566:15:60:69:0:Eye of the Storm',
+           'BG:B:9:607:15:60:79:0:Strand of the Ancients', 'BG:B:30:628:40:60:79:0:Isle of Conquest',
+           'BG:B:100:1189:5:10:80:1:Scarlet Chapel', 'BG:B:101:1230:10:10:80:1:Blackrock Throne',
+           'BG:B:102:1615:20:10:80:1:The Obsidian Colosseum', 'BG:B:104:1620:10:1:80:0:Tanaris',
+           'BG:B:105:1608:10:10:80:0:The Violet Hold', 'BG:B:106:998:10:10:80:0:Temple of Kotmogu',
+           "BG:B:107:1690:5:10:80:0:Summoner's Rift", 'BG:B:108:726:10:10:80:0:Twin Peaks',
+           'BG:B:120:761:10:1:60:0:Battle for Gilneas', 'BG:B:32:30:10:60:69:0:Random Battleground',
+           'BG:B:31:801:10:60:80:0:Slavery Valley', 'BG:END:17']
+
+
+def open_bg(preselect=2):
+    deliver(['BGQUEUE:MASTER:%s:%d' % (MASTER_GUID, preselect)] + BG_LIST)
+    g.ShowUIPanel(g.BattlefieldFrame)
+    mock.update(0.02)
+
+
+def row_button(index):
+    for o in mock.objects.values():
+        if o._kind == 'Button' and o.row == index and o.label is not None and o.IsVisible(o):
+            return o
+    return None
+
+
+mock.party = lua.table_from([])
+g.ShowUIPanel(g.BattlefieldFrame)
+check(not am._shown and g.BattlefieldFrame._shown, 'an ordinary battleground list stays the stock one')
+g.HideUIPanel(g.BattlefieldFrame)
+
+open_bg(2)
+check(am._shown, 'BGQUEUE:MASTER opens the Battlemaster')
+check(not g.BattlefieldFrame._shown, 'and the stock list is put away')
+texts = visible_texts()
+check('Battlemaster' in texts, 'headed Battlemaster')
+check('Warsong Gulch' in texts, "on the battlemaster's own battleground")
+check(not visible(g.CenturionArenaMasterType) and not visible(g.CenturionArenaMasterBots),
+      'no arena type menu, no bot box')
+first = row_button(1)
+check(first is not None and first.label._text == 'Random Battleground', 'Random first in the list')
+check(row_button(17) is None, 'sixteen rows show; the seventeenth waits for the wheel')
+check('10 vs 10  -  levels 10-80' in texts, 'team size and levels under the title')
+check('You are not in a group.' in texts, 'alone: says so')
+check(not visible(button_labelled('Join as Group')) or not enabled(button_labelled('Join as Group')),
+      'Join as Group greyed alone')
+dump('8_bg_wsg')
+am._scripts.OnMouseWheel(am, -1)
+check(row_button(17) is not None and row_button(17).label._text == 'Slavery Valley', 'the wheel scrolls the list')
+check('Warsong Gulch' in visible_texts(), 'and the pick stays')
+jb = button_labelled('Join Battle')
+jb.Click(jb)
+check(last_sent() == 'BGMASTER:JOIN:%s:2:0:N' % MASTER_GUID, 'Join Battle queues Warsong Gulch alone, any side')
+check(not am._shown, 'and the window closes')
+g.ShowUIPanel(g.BattlefieldFrame)
+check(not am._shown, 'the next battleground list is the stock one again')
+g.HideUIPanel(g.BattlefieldFrame)
+
+open_bg(100)
+texts = visible_texts()
+check('Scarlet Chapel' in texts and 'Side' in texts, 'Scarlet Chapel takes a side')
+check('Any side' in texts and 'Alliance' in texts and 'Horde' in texts, 'any side, Alliance or Horde')
+check(g.CenturionArenaMasterSide1._checked and not g.CenturionArenaMasterSide3._checked, 'any side to start')
+g.CenturionArenaMasterSide3.Click(g.CenturionArenaMasterSide3)
+check(g.CenturionArenaMasterSide3._checked and not g.CenturionArenaMasterSide1._checked, 'Horde picked, one box at a time')
+dump('8b_bg_scarlet_sides')
+jb = button_labelled('Join Battle')
+jb.Click(jb)
+check(last_sent() == 'BGMASTER:JOIN:%s:100:0:H' % MASTER_GUID, 'the side goes with the join')
+
+mock.party = lua.table_from(['Claude', 'Elgrom', 'Drunks', 'Tijuana', 'Grolem'])
+mock.leader = True
+open_bg(100)
+check(not enabled(button_labelled('Join as Group')), 'a party of six is too big for five a side')
+check('Your group is too big: 6 of you, 5 at most.' in visible_texts(), 'and says so')
+c = category('Warsong Gulch')
+c.Click(c)
+gb = button_labelled('Join as Group')
+check(enabled(gb), 'ten a side takes the six of them')
+check(not visible(g.CenturionArenaMasterSide1), 'no side choice where there is none')
+gb.Click(gb)
+check(last_sent() == 'BGMASTER:JOIN:%s:2:1:N' % MASTER_GUID, 'Join as Group queues the party')
+mock.leader = False
+open_bg(3)
+check(not enabled(button_labelled('Join as Group')), 'not the leader: greyed')
+check('Only your group leader can queue the group.' in visible_texts(), 'and says so')
+am.Hide(am)
+mock.leader = True
+mock.party = lua.table_from([])
+
+open_bg(105)
+check('The Violet Hold' in visible_texts(), 'a long list opens scrolled to its pick')
+dump('8c_bg_violet_hold')
+am.Hide(am)
+
+# A server that sends each battleground's party cap (BattlemasterList MaxGroupSize).
+BG_LIST_CAP = ['BG:BEGIN', 'BG:B:2:489:10:10:80:0:10:Warsong Gulch',
+               'BG:B:1:30:40:60:69:0:5:Alterac Valley', 'BG:END:2']
+mock.party = lua.table_from(['Claude', 'Elgrom', 'Drunks', 'Tijuana', 'Grolem'])
+mock.leader = True
+deliver(['BGQUEUE:MASTER:%s:1' % MASTER_GUID] + BG_LIST_CAP)
+g.ShowUIPanel(g.BattlefieldFrame)
+mock.update(0.02)
+texts = visible_texts()
+check('Alterac Valley' in texts and '40 vs 40  -  levels 60-69' in texts, 'the capped line still names it, 40 a side')
+check(not enabled(button_labelled('Join as Group')), 'its party cap of five turns a party of six away')
+c = category('Warsong Gulch')
+c.Click(c)
+check(enabled(button_labelled('Join as Group')), 'Warsong Gulch still takes the six')
+am.Hide(am)
+mock.party = lua.table_from([])
+
+open_master()
+check(am._shown and 'Arena Master' in visible_texts(), 'the Arena Master still opens after the Battlemaster')
+check(visible(g.CenturionArenaMasterType) and not visible(g.CenturionArenaMasterSide1),
+      'with its menu, and no side boxes')
+am.Hide(am)
 
 json.dump(dumps, open(os.path.join(HERE, 'dumps.json'), 'w'))
 print('unknown keys', sorted(k for k in mock.unknown.keys()) if mock.unknown else [])
