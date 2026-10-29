@@ -122,10 +122,33 @@ local function OnBindLine(line)
 	end
 end
 
+-- While a borrowed set is on, the Key Bindings window stays shut: its Okay
+-- button would save that set over the player's own.
+local function GuardBindingWindow()
+	if ( not KeyBindingFrame or KeyBindingFrame.allStarGuarded ) then
+		return
+	end
+	KeyBindingFrame.allStarGuarded = true
+	KeyBindingFrame:HookScript("OnShow", function(self)
+		if ( realSet ) then
+			self:Hide()
+			UIErrorsFrame:AddMessage("Key bindings can be changed once the All-Star match is over.", 1.0, 0.1, 0.1, 1.0)
+		end
+	end)
+end
+GuardBindingWindow()
+
 local listener = CreateFrame("Frame")
 listener:RegisterEvent("CHAT_MSG_ADDON")
 listener:RegisterEvent("PLAYER_REGEN_ENABLED")
+listener:RegisterEvent("ADDON_LOADED")
 listener:SetScript("OnEvent", function(self, event, prefix, message)
+	if ( event == "ADDON_LOADED" ) then
+		if ( prefix == "Blizzard_BindingUI" ) then
+			GuardBindingWindow()
+		end
+		return
+	end
 	if ( event == "PLAYER_REGEN_ENABLED" ) then
 		if ( pending ) then
 			ApplyBindings(pending)
