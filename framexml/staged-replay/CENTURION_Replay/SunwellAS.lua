@@ -2975,6 +2975,9 @@ local function Execute(target, prefix, ...)
         SetEndTime(tonumber(value))
     elseif (prefix == "NME") then
         UpdateName(target, value)
+    elseif (prefix == "RWN") then
+        -- Buffle Shuffle rounds won, for the scoreboard (CenturionReplayScore.lua).
+        ATPlayers[target].wins = tonumber(value)
     elseif (prefix == "PHP") then
         UpdatePet(target, value)
     elseif (prefix == "PET") then

@@ -7,7 +7,9 @@
 -- here it opens whenever you like: the Scoreboard button, or the scoreboard
 -- key. The server (BGReplay.cpp) answers from the replay as it stands -
 -- damage, healing and killing blows up to the moment you are watching - and
--- the board keeps asking every two seconds while it is open.
+-- the board keeps asking every two seconds while it is open. A Buffle
+-- Shuffle's Rounds Won column comes from the server's RWN lines through the
+-- squad frames' feed, as in a live match.
 --
 -- The default UI is usually hidden during a replay and the scoreboard is part
 -- of it, so opening the board shows the UI; closing it hides the UI again if
@@ -37,6 +39,11 @@ function CenturionReplayScore_Open()
     end
     Ask()
     ShowUIPanel(WorldStateScoreFrame)
+    -- Buffle Shuffle's Rounds Won column and Four Corners' squad colours come
+    -- from CenturionSquadFrames' feed (CenturionReplaySpectate.lua).
+    if CenturionReplaySpectate_ScoreFeed then
+        CenturionReplaySpectate_ScoreFeed(true)
+    end
 end
 
 function CenturionReplayScore_Toggle()
@@ -78,6 +85,9 @@ end)
 
 if WorldStateScoreFrame then
     WorldStateScoreFrame:HookScript("OnHide", function()
+        if CenturionReplaySpectate_ScoreFeed then
+            CenturionReplaySpectate_ScoreFeed(false)
+        end
         if not shownUI then
             return
         end

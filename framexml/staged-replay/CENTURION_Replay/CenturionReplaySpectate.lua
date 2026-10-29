@@ -444,6 +444,11 @@ end
 local feedActive = false
 local feedRoster = nil
 local feedStates = {}
+local feedWins = {}
+local feedSeats = {}            -- squad -> seat -> guid, as the frames show them
+-- Fed for the scoreboard alone (not spectating): the squad frames' Rounds Won
+-- column and squad colours, with its enemy frames kept out of sight.
+local scoreOnly = false
 
 local function FeedLine(line)
     if CenturionSquadFrames_OnLine then
@@ -473,6 +478,7 @@ local function FeedMembers()
     local squads, count = {}, squadMatch and 0 or 2
     for _, guid in ipairs(guids) do
         local p = ATPlayers[guid]
+        p.guid = p.guid or guid
         local squad = FeedSquadOf(p, squadMatch)
         if squad then
             squads[squad] = squads[squad] or {}
@@ -497,12 +503,12 @@ local function FeedState(p)
 end
 
 local function FeedUpdate(guid)
-    local me = ATPlayers and ATPlayers[guid]
-    if not me or not CenturionSquadFrames_OnLine then
+    local me = guid and ATPlayers and ATPlayers[guid]
+    if (guid and not me) or not ATPlayers or not CenturionSquadFrames_OnLine then
         return
     end
     local squads, count, squadMatch = FeedMembers()
-    local mine = FeedSquadOf(me, squadMatch)
+    local mine = me and FeedSquadOf(me, squadMatch) or nil
 
     local roster = { (mine or "-") .. ":" .. count }
     local lines = {}
@@ -516,9 +522,17 @@ local function FeedUpdate(guid)
         roster[#roster + 1] = lines[squad]
     end
     local signature = table.concat(roster, "|")
+    feedSeats = {}
+    for squad = 0, count - 1 do
+        feedSeats[squad] = {}
+        for index, p in ipairs(squads[squad] or {}) do
+            feedSeats[squad][index] = p.guid
+        end
+    end
     if signature ~= feedRoster then
         feedRoster = signature
         feedStates = {}
+        feedWins = {}
         FeedLine("SQ:" .. (mine or "-") .. ":" .. count)
         for squad = 0, count - 1 do
             FeedLine(lines[squad])
@@ -536,6 +550,22 @@ local function FeedUpdate(guid)
             feedStates[squad] = line
             FeedLine(line)
         end
+
+        -- Buffle Shuffle: the rounds each has won (the server's RWN lines).
+        local wins, any = {}, false
+        for _, p in ipairs(squads[squad] or {}) do
+            wins[#wins + 1] = tonumber(p.wins) or 0
+            any = any or p.wins ~= nil
+        end
+        local winsLine = any and ("SQV:" .. squad .. ":" .. table.concat(wins, ",")) or nil
+        if winsLine and feedWins[squad] ~= winsLine then
+            feedWins[squad] = winsLine
+            FeedLine(winsLine)
+        end
+    end
+
+    if scoreOnly and CenturionSquadFrames and CenturionSquadFrames:IsShown() and not InCombatLockdown() then
+        CenturionSquadFrames:Hide()
     end
 end
 
@@ -546,6 +576,47 @@ local function FeedStop()
     feedActive = false
     feedRoster = nil
     feedStates = {}
+    feedWins = {}
+    feedSeats = {}
+    scoreOnly = false
+end
+
+-- A right-click on one of those enemy frames spectates that player. The
+-- frames are secure buttons (right-click = /focus them); this runs after, and
+-- the focus then goes to whoever is watched.
+for squad = 0, 3 do
+    for index = 1, 5 do
+        local button = _G["CenturionSquadFrame" .. squad .. "Member" .. index]
+        if button and button.HookScript then
+            button:HookScript("PostClick", function(self, mouseButton)
+                if mouseButton ~= "RightButton" or not active then
+                    return
+                end
+                local guid = feedSeats[squad] and feedSeats[squad][index]
+                if guid and CenturionReplaySpectate_Start then
+                    CenturionReplaySpectate_Start(guid)
+                end
+            end)
+        end
+    end
+end
+
+-- For CenturionReplayScore.lua: while the scoreboard is open and nobody is
+-- spectated, the same feed with no side of your own (so no enemy frames
+-- either), for the Rounds Won column and the squad colours on the board.
+function CenturionReplaySpectate_ScoreFeed(on)
+    if active then
+        return                      -- spectating feeds it already, from their side
+    end
+    if on then
+        if not scoreOnly then
+            FeedStop()
+            scoreOnly = true
+        end
+        FeedUpdate(nil)
+    elseif scoreOnly then
+        FeedStop()
+    end
 end
 
 ------------------------------------------------------------------------------
@@ -610,6 +681,9 @@ function CenturionReplaySpectate_Start(guid)
     end
     HideArenaFrames()
     BorrowPlayerFrame(guid)
+    if scoreOnly then
+        FeedStop()                  -- the scoreboard's feed becomes theirs
+    end
     feedRoster = nil                -- their side, not the last player's
     FeedUpdate(guid)
     ShowStatus()
@@ -632,6 +706,9 @@ local function StopSpectating(stopCamera, tellServer, land)
     CastClear()
     ReturnPlayerFrame()
     FeedStop()
+    if WorldStateScoreFrame and WorldStateScoreFrame:IsShown() then
+        CenturionReplaySpectate_ScoreFeed(true)
+    end
     if tellServer then
         TellServer(land and "SPECTATE OFF LAND" or "SPECTATE OFF")
     end
@@ -768,6 +845,15 @@ ticker:SetScript("OnUpdate", function(self, elapsed)
             ShowStatus()
         end
         return
+    end
+
+    -- The scoreboard's feed keeps up while it is open.
+    if scoreOnly then
+        feedSince = feedSince + elapsed
+        if feedSince >= FEED_EVERY then
+            feedSince = 0
+            FeedUpdate(nil)
+        end
     end
 
     -- A restarted replay brings the actors back under the same guids.

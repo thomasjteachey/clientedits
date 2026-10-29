@@ -208,6 +208,7 @@ function UnitGUID(unit) if unit == "focus" then return MOCK.focus end return nil
 function InCombatLockdown() return MOCK.combat end
 CENTURION_SQUAD_NAMES = { [0] = "Gold Team", [1] = "Green Team", [2] = "Blue Team", [3] = "Purple Team" }
 MOCK.squadLines = {}
+for sq = 0, 3 do for i = 1, 5 do CreateFrame("Button", "CenturionSquadFrame" .. sq .. "Member" .. i, UIParent) end end
 function CenturionSquadFrames_OnLine(line) table.insert(MOCK.squadLines, line) end
 
 -- Recount's "Reset Recount?" on joining a group.

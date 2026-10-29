@@ -179,6 +179,11 @@ check(list(g.MOCK.squadLines.values())[-1].startswith('SQH:1:') and '40.' in lis
 g.MOCK.focus = sh[4]
 g.MOCK.update(0.3)
 check(g.MOCK.focus == sh[2], 'focusing someone else from a frame puts them back')
+b = g.CenturionSquadFrame1Member2
+b._scripts.PostClick(b, 'RightButton')
+check(g.MOCK.following == sh[3] and g.MOCK.focus == sh[3], 'a right-click on an enemy frame spectates that player: %s' % g.MOCK.following)
+g.CenturionReplaySpectate_Start(sh[2])
+check(g.MOCK.following == sh[2], 'and back')
 
 # the echo of our own whisper does not break the feed parser
 msg('SPECTATE ' + sh[2])
