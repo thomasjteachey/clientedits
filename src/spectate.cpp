@@ -37,7 +37,12 @@
 //               stores the guid at 0x00BD07D0 and fires PLAYER_FOCUS_CHANGED
 //               (event 0x9E). FocusUnit is protected in Lua; the replay's
 //               spectate puts the watched player there so the player frame can
-//               show them ("focus" gets every UNIT_* event).
+//               show them ("focus" gets every UNIT_* event). It first tests
+//               0x00D4139C, the running Lua's taint (the addon whose code is
+//               executing, 0 for Blizzard's): set, it calls 0x00513530 - the
+//               ADDON_ACTION_FORBIDDEN report, "blocked from an action only
+//               available to the Blizzard UI" - and changes nothing. So the call
+//               is made with the taint cleared, and put back after.
 //
 // The Lua function is registered as a 5-byte jmp in int3 padding inside .text
 // (Lua will not call a function outside it, gluebridge.cpp): 0x00569904, in the
@@ -83,10 +88,27 @@ static const BYTE  kObjectPtrSig[] = { 0x55, 0x8B, 0xEC, 0x64, 0x8B, 0x0D, 0x2C,
 
 static const DWORD kSetFocus = 0x0051FF20;
 static const BYTE  kSetFocusSig[] = { 0x55, 0x8B, 0xEC, 0xA1, 0xD0, 0x07, 0xBD, 0x00, 0x56, 0x8B, 0x75, 0x08 };
+static const DWORD kSetFocusTaintTest = 0x0051FF43;   // cmp dword ptr [0x00D4139C], 0
+static const BYTE  kSetFocusTaintSig[] = { 0x83, 0x3D, 0x9C, 0x13, 0xD4, 0x00, 0x00 };
+#define kLuaTaint (*(volatile DWORD*)0x00D4139C)
 typedef void (__cdecl* SetFocus_t)(DWORD* guid);
 #define kFocusGuid ((DWORD*)0x00BD07D0)
 static int   g_focusBorrowed = 0;
 static DWORD g_savedFocus[2] = { 0, 0 };
+
+// SetFocus as Blizzard's own code would call it: with no addon's taint on the
+// running Lua (the focus-changed handlers it fires run clean too).
+static void SetFocusUntainted(DWORD lo, DWORD hi)
+{
+    DWORD guid[2] = { lo, hi };
+    DWORD const taint = kLuaTaint;
+    kLuaTaint = 0;
+    __try {
+        ((SetFocus_t)kSetFocus)(guid);
+    } __finally {
+        kLuaTaint = taint;
+    }
+}
 
 static const DWORD kLuaThunk = 0x00569904;
 static const BYTE  kPadSig[] = { 0xCC, 0xCC, 0xCC, 0xCC, 0xCC };
@@ -484,9 +506,10 @@ static int Spectate(void* L)
         return 1;
     }
     // 2: knows "focus" and lands the camera after a movement key.
+    // 3: the focus is set without the addon's taint (2's was always refused).
     if (arg && !_stricmp(arg, "version"))
     {
-        pLuaPushNumber(L, 2.0);
+        pLuaPushNumber(L, 3.0);
         return 1;
     }
 
@@ -509,14 +532,12 @@ static int Spectate(void* L)
                 g_savedFocus[1] = kFocusGuid[1];
                 g_focusBorrowed = 1;
             }
-            DWORD guid[2] = { lo, hi };
-            ((SetFocus_t)kSetFocus)(guid);
+            SetFocusUntainted(lo, hi);
         }
         else if (g_focusBorrowed)
         {
             g_focusBorrowed = 0;
-            DWORD guid[2] = { g_savedFocus[0], g_savedFocus[1] };
-            ((SetFocus_t)kSetFocus)(guid);
+            SetFocusUntainted(g_savedFocus[0], g_savedFocus[1]);
         }
         if (kFocusGuid[0] || kFocusGuid[1])
             PushGuid(L, kFocusGuid[0], kFocusGuid[1]);
@@ -613,7 +634,8 @@ void Spectate_Install()
         JumpTo(kInteract, (void*)&InteractHook))
         g_ready |= 2;
     // The focus is only called, never patched.
-    if (SigOk(kSetFocus, kSetFocusSig, sizeof(kSetFocusSig), "SetFocus"))
+    if (SigOk(kSetFocus, kSetFocusSig, sizeof(kSetFocusSig), "SetFocus") &&
+        SigOk(kSetFocusTaintTest, kSetFocusTaintSig, sizeof(kSetFocusTaintSig), "SetFocus taint test"))
         g_ready |= 4;
     Log("installed (normal camera + yaw lock, right-click %s, focus %s)",
         (g_ready & 2) ? "on" : "OFF", (g_ready & 4) ? "on" : "OFF");

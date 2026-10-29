@@ -157,6 +157,15 @@ check(g.CenturionReplaySpectateStatus._shown and 'move to stop' in (g.CenturionR
 check(g.PlayerFrame.unit == 'focus' and g.MOCK.focus == sh[2] and g.PlayerLevelText._text in ('80', 80),
       'your player frame shows them (through the focus)')
 check(g.FocusFrame._alpha == 0, 'the focus frame does not show them twice')
+g.Recount.ShowReset(g.Recount)
+check(not g.MOCK.recountAsked, 'Recount does not ask to reset for their party')
+f = g.MOCK.chatFilters['CHAT_MSG_SYSTEM']
+check(f(None, 'CHAT_MSG_SYSTEM', 'Koffee Jones joins the party.') is True and f(None, 'CHAT_MSG_SYSTEM', 'Looting changed to Free for All.') is True,
+      'their party joining is not announced in chat')
+cmd(sh[3], 'PWT', 3)
+g.MOCK.update(0.3)
+hl = [l for l in g.MOCK.squadLines.values() if l.startswith('SQH:1:')]
+check(hl and '.3' in hl[-1], 'an enemy on energy shows as energy (power type kept): %s' % hl[-1:])
 lines = list(g.MOCK.squadLines.values())
 mine = [l for l in lines if l.startswith('SQ:')]
 check(mine and mine[-1] == 'SQ:0:2', 'the enemy frames are set up from their side (gold, two teams): %s' % mine[-1:])

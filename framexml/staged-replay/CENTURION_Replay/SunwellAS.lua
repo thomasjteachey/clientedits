@@ -2467,6 +2467,8 @@ end
 
 -- Used to set current power type for player (target) to (value)
 local function UpdatePowerType(target, value)
+    -- Kept: the spectate view's enemy frames colour their power bars by it.
+    ATPlayers[target].powertype = value
     for _, barname in pairs(ALLBARS) do
         local frame = ATPlayers[target][barname].power
         if (value == 0) then -- mana

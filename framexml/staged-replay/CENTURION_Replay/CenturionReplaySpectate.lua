@@ -33,7 +33,9 @@ local QUIET_AFTER = 5
 local warnedNoCamera = false
 
 -- "You have learned a new spell" for every borrowed spell, and "unlearned"
--- after: All-Star's chat filter, for while spectating and a moment after.
+-- after: All-Star's chat filter, for while spectating and a moment after. The
+-- party the server lists you in (their teammates) says the same as a real one
+-- would - "X joins the party", the loot rules - and is hidden the same way.
 local patterns = {}
 local function AddPattern(name, specs)
     local fmt = _G[name]
@@ -44,8 +46,30 @@ local function AddPattern(name, specs)
     pattern = string.gsub(pattern, specs, ".+")
     table.insert(patterns, "^" .. pattern .. "$")
 end
-for _, name in ipairs({ "ERR_LEARN_SPELL_S", "ERR_LEARN_ABILITY_S", "ERR_LEARN_PASSIVE_S", "ERR_SPELL_UNLEARNED_S" }) do
+for _, name in ipairs({ "ERR_LEARN_SPELL_S", "ERR_LEARN_ABILITY_S", "ERR_LEARN_PASSIVE_S", "ERR_SPELL_UNLEARNED_S",
+    "ERR_JOINED_GROUP_S", "ERR_LEFT_GROUP_S", "ERR_LEFT_GROUP_YOU", "ERR_GROUP_DISBANDED",
+    "ERR_RAID_MEMBER_ADDED_S", "ERR_RAID_MEMBER_REMOVED_S", "ERR_RAID_YOU_JOINED", "ERR_RAID_YOU_LEFT",
+    "ERR_NEW_LEADER_S", "ERR_NEW_LEADER_YOU", "ERR_SET_LOOT_FREEFORALL", "ERR_SET_LOOT_GROUP",
+    "ERR_SET_LOOT_ROUNDROBIN", "ERR_SET_LOOT_NBG", "ERR_SET_LOOT_MASTER", "ERR_SET_LOOT_THRESHOLD_S",
+    "ERR_DUNGEON_DIFFICULTY_CHANGED_S", "ERR_RAID_DIFFICULTY_CHANGED_S" }) do
     AddPattern(name, "%%%%s")
+end
+
+-- Recount asks "Reset Recount?" on joining a group (its default); the
+-- watched player's party is not one you joined. Wrapped once Recount is there.
+local recountWrapped = false
+local function QuietRecount()
+    if recountWrapped or type(Recount) ~= "table" or type(Recount.ShowReset) ~= "function" then
+        return
+    end
+    recountWrapped = true
+    local showReset = Recount.ShowReset
+    Recount.ShowReset = function(...)
+        if active or GetTime() < quietUntil then
+            return
+        end
+        return showReset(...)
+    end
 end
 
 local function Quiet()
@@ -110,7 +134,7 @@ end
 local status = CreateFrame("Frame", "CenturionReplaySpectateStatus", WorldFrame)
 status:SetWidth(400)
 status:SetHeight(24)
-status:SetPoint("TOP", WorldFrame, "TOP", 0, -30)
+status:SetPoint("TOP", WorldFrame, "TOP", 0, -125)   -- under the arena's world-state lines
 status:SetFrameStrata("HIGH")
 status.text = status:CreateFontString(nil, "OVERLAY")
 status.text:SetFont(STANDARD_TEXT_FONT, 15, "OUTLINE")
@@ -363,9 +387,12 @@ local function PaintPlayerFrame(unit)
     end
 end
 
--- What the client's DLL can do: 2 knows "focus" (an older one would take the
--- word for "stop following"). Asked while not following, where an older DLL
--- does nothing with it.
+-- What the client's DLL can do: 3 sets the focus as Blizzard's code would (2
+-- knew "focus" but the client refused it from an addon, "blocked from an
+-- action only available to the Blizzard UI"; older ones would take the word
+-- for "stop following"). Asked while not following, where an older DLL does
+-- nothing with it.
+local FOCUS_DLL = 3
 local dllVersion = nil
 
 local function AskDllVersion()
@@ -375,7 +402,7 @@ local function AskDllVersion()
 end
 
 local function BorrowPlayerFrame(guid)
-    if not CenturionSpectate or (dllVersion or 0) < 2 or not PlayerFrame or not UnitFrame_SetUnit or InCombatLockdown() then
+    if not CenturionSpectate or (dllVersion or 0) < FOCUS_DLL or not PlayerFrame or not UnitFrame_SetUnit or InCombatLockdown() then
         return
     end
     local focus = CenturionSpectate("focus", guid)
@@ -399,7 +426,7 @@ local function ReturnPlayerFrame()
         end
         PaintPlayerFrame("player")
     end
-    if CenturionSpectate and (dllVersion or 0) >= 2 then
+    if CenturionSpectate and (dllVersion or 0) >= FOCUS_DLL then
         CenturionSpectate("focus", "off")
     end
     if FocusFrame then
@@ -563,6 +590,7 @@ function CenturionReplaySpectate_Start(guid)
     if not active then
         AskDllVersion()             -- before the follow: see dllVersion
     end
+    QuietRecount()
     followed = guid
     active = true
     resumeGuid = nil

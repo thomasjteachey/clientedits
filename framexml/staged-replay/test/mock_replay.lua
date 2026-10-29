@@ -113,7 +113,7 @@ function CenturionSpectate(arg, n)
 		MOCK.armed = false
 		return 0
 	elseif arg == "version" then
-		return MOCK.dllVersion or 2
+		return MOCK.dllVersion or 3
 	elseif arg == "focus" then
 		if type(n) == "string" and n:sub(1, 2) == "0x" then
 			MOCK.savedFocus = MOCK.savedFocus or MOCK.focus or "none"
@@ -209,3 +209,8 @@ function InCombatLockdown() return MOCK.combat end
 CENTURION_SQUAD_NAMES = { [0] = "Gold Team", [1] = "Green Team", [2] = "Blue Team", [3] = "Purple Team" }
 MOCK.squadLines = {}
 function CenturionSquadFrames_OnLine(line) table.insert(MOCK.squadLines, line) end
+
+-- Recount's "Reset Recount?" on joining a group.
+Recount = { ShowReset = function(self) MOCK.recountAsked = (MOCK.recountAsked or 0) + 1 end }
+ERR_JOINED_GROUP_S = "%s joins the party."
+ERR_SET_LOOT_FREEFORALL = "Looting changed to Free for All."
