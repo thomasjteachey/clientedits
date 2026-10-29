@@ -244,6 +244,15 @@ am:SetBackdrop({
 })
 am:SetBackdropColor(0, 0, 0, 1)
 am:Hide()
+
+-- On it, the board's own cork, a shade darker than the board (owner: "the
+-- black pane is ugly, can you just have the brown background that the rest of
+-- it is kind of doing?"): the list column reads as wood, the board stays apart.
+local inner = am:CreateTexture(nil, "BACKGROUND")
+inner:SetTexture("Interface\\AchievementFrame\\UI-Achievement-AchievementBackground")
+inner:SetPoint("TOPLEFT", am, "TOPLEFT", 16, -16)
+inner:SetPoint("BOTTOMRIGHT", am, "BOTTOMRIGHT", -16, 16)
+inner:SetVertexColor(0.29, 0.22, 0.13)
 tinsert(UISpecialFrames, "CenturionArenaMaster")
 
 -- Positions are the mockup's: x right and y down from the frame's top-left.
