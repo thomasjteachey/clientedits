@@ -21,13 +21,18 @@
 //                                              "spectate them" (not interact)
 //   guid = CenturionSpectate("click")         the player last right-clicked while
 //                                              armed, once, else nil
-//   v = CenturionSpectate("version")          2 (older DLLs answer nil: they took
-//                                              any other word for "off")
+//   v = CenturionSpectate("version")          4 (older DLLs answer nil: they took
+//                                              any other word for "off"; 3 has
+//                                              the focus, 4 the damage numbers)
 //   guid = CenturionSpectate("focus", "0xGUID" | "off")
 //                                              make that unit the focus (FocusUnit
 //                                              is protected in Lua), or put back
 //                                              the focus there before; returns the
 //                                              focus now
+//
+// While following, the numbers over units are drawn for the watched unit's
+// hits and heals (and its pets') instead of yours, and Blizzard_CombatText
+// shows what it takes (docs/DAMAGE_TEXT_RE.md).
 //
 // A movement key (W/A/S/D, strafe, autorun, both mouse buttons) ends the follow
 // and moves the player's own character as usual. The camera stays on the unit

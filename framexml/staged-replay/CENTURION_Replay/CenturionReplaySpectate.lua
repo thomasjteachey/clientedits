@@ -130,35 +130,6 @@ local function TellServer(text)
     end
 end
 
--- "Spectating <name> - move to stop", over the top of the screen.
-local status = CreateFrame("Frame", "CenturionReplaySpectateStatus", WorldFrame)
-status:SetWidth(400)
-status:SetHeight(24)
-status:SetPoint("TOP", WorldFrame, "TOP", 0, -125)   -- under the arena's world-state lines
-status:SetFrameStrata("HIGH")
-status.text = status:CreateFontString(nil, "OVERLAY")
-status.text:SetFont(STANDARD_TEXT_FONT, 15, "OUTLINE")
-status.text:SetPoint("CENTER", 0, 0)
-status:Hide()
-
-local CLASS_TOKENS = {
-    [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE", [5] = "PRIEST",
-    [6] = "DEATHKNIGHT", [7] = "SHAMAN", [8] = "MAGE", [9] = "WARLOCK", [11] = "DRUID",
-}
-
-local function ShowStatus()
-    local p = followed and ATPlayers and ATPlayers[followed]
-    if not p then
-        status:Hide()
-        return
-    end
-    local token = CLASS_TOKENS[tonumber(p.class) or 0]
-    local c = token and RAID_CLASS_COLORS and RAID_CLASS_COLORS[token]
-    local hex = c and string.format("%02x%02x%02x", c.r * 255, c.g * 255, c.b * 255) or "ffffff"
-    status.text:SetText("Spectating |cff" .. hex .. (p.name or "?") .. "|r - move to stop")
-    status:Show()
-end
-
 -- The arena frames stay hidden while spectating: SunwellAS shows them again
 -- on its own as the feed arrives, so this runs every frame.
 local function HideArenaFrames()
@@ -686,7 +657,6 @@ function CenturionReplaySpectate_Start(guid)
     end
     feedRoster = nil                -- their side, not the last player's
     FeedUpdate(guid)
-    ShowStatus()
 end
 
 -- stopCamera false: the DLL already ended the follow (a movement key).
@@ -712,7 +682,6 @@ local function StopSpectating(stopCamera, tellServer, land)
     if tellServer then
         TellServer(land and "SPECTATE OFF LAND" or "SPECTATE OFF")
     end
-    status:Hide()
     for button in pairs(lit) do
         button:UnlockHighlight()
     end
@@ -791,7 +760,6 @@ end
 ------------------------------------------------------------------------------
 
 local ticker = CreateFrame("Frame")
-local since = 0
 local resumeTick = 0
 local feedSince = 0
 local FEED_EVERY = 0.25
@@ -837,12 +805,6 @@ ticker:SetScript("OnUpdate", function(self, elapsed)
                 button:UnlockHighlight()
                 lit[button] = nil
             end
-        end
-
-        since = since + elapsed
-        if since >= 0.5 then
-            since = 0
-            ShowStatus()
         end
         return
     end

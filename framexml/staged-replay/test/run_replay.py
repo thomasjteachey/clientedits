@@ -150,8 +150,7 @@ check(uiparent_shown(), 'the normal UI shows while spectating (their buttons are
 check(g.MOCK.cvars['Sound_ListenerAtCharacter'] == '0', 'while spectating the sound is heard from the camera')
 g.MOCK.update(0.1)
 check(all(not g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames are hidden while spectating')
-check(g.CenturionReplaySpectateStatus._shown and 'move to stop' in (g.CenturionReplaySpectateStatus.text._text or ''),
-      'a line says who is spectated and how to stop')
+check(g.CenturionReplaySpectateStatus is None, 'no status line: spectating says nothing on screen')
 
 # their player frame, their enemy frames
 check(g.PlayerFrame.unit == 'focus' and g.MOCK.focus == sh[2] and g.PlayerLevelText._text in ('80', 80),
@@ -248,7 +247,6 @@ check(not g.CenturionReplaySpectate_IsActive(), 'moving ends spectating')
 check(any('SPECTATE OFF LAND' in s for s in sent_since(mark)), 'the server is told to give the bars back and land you on them')
 check(not uiparent_shown(), 'the UI goes back the way the replay had it')
 check(all(g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames come back')
-check(not g.CenturionReplaySpectateStatus._shown, 'the status line goes')
 check(g.PlayerFrame.unit == 'player' and g.MOCK.focus is None and g.FocusFrame._alpha == 1, 'your own player frame and focus come back')
 check(list(g.MOCK.squadLines.values())[-1] == 'SQ:-', 'the enemy frames are put away')
 check(g.MOCK.cvars['Sound_ListenerAtCharacter'] == '1', 'the sound goes back to your own setting')

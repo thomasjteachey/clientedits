@@ -43,6 +43,20 @@
 //               ADDON_ACTION_FORBIDDEN report, "blocked from an action only
 //               available to the Blizzard UI" - and changes nothing. So the call
 //               is made with the taint cleared, and put back after.
+//   0x007190A0  "is this source me or my pet?" for the numbers drawn over a unit
+//               (world text): eax = WGUID* source, [esp+4] = bool* isPlayer,
+//               returns al, caller pops. Its only callers are the damage
+//               (0x00722340, target in edi), heal (0x00722440, esi) and miss
+//               (0x0071F990, [ebp-4]) texts, which first skip a target that is
+//               the active mover. DamageSourceHook answers yes for the watched
+//               unit (and its pets) while following, and no for numbers over
+//               the watched unit itself, as the client does for you.
+//   0x00CA1380  the combat-text unit (lo, hi at +4), which every
+//               COMBAT_TEXT_UPDATE site in UnitCombatLog_C.cpp compares the
+//               target with (Lua CombatTextSetActiveUnit, 0x0074D580): the
+//               watched unit's while following, so Blizzard_CombatText shows
+//               what they take.
+//   Full notes: docs/DAMAGE_TEXT_RE.md.
 //
 // The Lua function is registered as a 5-byte jmp in int3 padding inside .text
 // (Lua will not call a function outside it, gluebridge.cpp): 0x00569904, in the
@@ -58,7 +72,7 @@
 
 static char  g_dir[MAX_PATH] = { 0 };
 static int   g_enabled = 1;          // [Spectate] Enabled
-static int   g_ready = 0;            // 1 camera + Lua, 2 right-click too, 4 focus
+static int   g_ready = 0;            // 1 camera + Lua, 2 right-click, 4 focus, 8 damage text
 static int   g_faults = 0;
 
 static volatile LONG g_on = 0;       // a unit to keep the camera on
@@ -112,6 +126,19 @@ static void SetFocusUntainted(DWORD lo, DWORD hi)
 
 static const DWORD kLuaThunk = 0x00569904;
 static const BYTE  kPadSig[] = { 0xCC, 0xCC, 0xCC, 0xCC, 0xCC };
+
+// The world-text source gate and the combat-text unit (see the header).
+static const DWORD kDamageSource = 0x007190A0;
+static const BYTE  kDamageSourceSig[] = { 0x55, 0x8B, 0xEC, 0x56, 0x8B, 0xF0, 0xE8, 0xE5, 0xA6, 0xDB, 0xFF, 0x8B, 0x0E, 0x3B, 0xC8 };
+static DWORD       g_damageSourceResume = 0x007190A6;
+static const DWORD kRetDamageText = 0x0072239A;
+static const DWORD kRetHealText   = 0x00722475;
+static const DWORD kRetMissText   = 0x0071F9D6;
+static const DWORD kCombatTextUnitSite = 0x0074D599;   // mov [0x00CA1380], eax / mov [0x00CA1384], edx
+static const BYTE  kCombatTextUnitSig[] = { 0xA3, 0x80, 0x13, 0xCA, 0x00, 0x89, 0x15, 0x84, 0x13, 0xCA, 0x00 };
+#define kCombatTextUnit ((volatile DWORD*)0x00CA1380)
+static int   g_ctBorrowed = 0;
+static DWORD g_ctSaved[2] = { 0, 0 };
 
 #define kWorldFramePtr (*(BYTE**)0x00B7436C)
 static const DWORD kOff_Camera     = 0x7E20;
@@ -239,6 +266,111 @@ static void RestoreCamera()
         ((SetCameraTarget_t)kSetCameraTarget)(wf, player, 0);
 }
 
+// ------------------------------------------------------------ damage numbers
+// Incoming: the combat-text unit is the watched one while following. Put
+// back every frame (Blizzard_CombatText sets it to "player" on option changes
+// and vehicle events), and the one before back when the follow ends.
+static void BorrowCombatTextUnit()
+{
+    if (!(g_ready & 8))
+        return;
+    if (!g_ctBorrowed)
+    {
+        g_ctSaved[0] = kCombatTextUnit[0];
+        g_ctSaved[1] = kCombatTextUnit[1];
+        g_ctBorrowed = 1;
+    }
+    kCombatTextUnit[0] = g_followLo;
+    kCombatTextUnit[1] = g_followHi;
+}
+
+static void ReturnCombatTextUnit()
+{
+    if (!g_ctBorrowed)
+        return;
+    g_ctBorrowed = 0;
+    if (kCombatTextUnit[0] == g_followLo && kCombatTextUnit[1] == g_followHi)
+    {
+        kCombatTextUnit[0] = g_ctSaved[0];
+        kCombatTextUnit[1] = g_ctSaved[1];
+    }
+}
+
+// Outgoing: -1 = not the watched unit's (the client decides), else the answer
+// in al; *isPlayer = 1 for the unit itself, 0 for its pet or totem (the pet
+// damage options then apply, and pets' heals stay hidden, as for yours).
+static int __cdecl WatchedDamageSource(const DWORD* src, BYTE* isPlayer, const BYTE* target)
+{
+    __try {
+        if (!g_on || !src || !isPlayer)
+            return -1;
+        DWORD const lo = g_followLo, hi = g_followHi;
+        bool const self = src[0] == lo && src[1] == hi;
+        bool pet = false;
+        if (!self)
+        {
+            BYTE const* const unit = (BYTE const*)((ObjectPtr_t)kObjectPtr)(src[0], src[1], kTypeMaskUnit, "spectate.cpp", __LINE__);
+            if (unit)
+            {
+                DWORD const* const fields = *(DWORD const* const*)(unit + 0xD0);   // the UNIT fields
+                DWORD const* const owner = (fields[6] | fields[7]) ? fields + 6 : fields + 10;   // CHARMEDBY, else CREATEDBY
+                pet = owner[0] == lo && owner[1] == hi;
+            }
+        }
+        if (!self && !pet)
+            return -1;
+        if (target)
+        {
+            DWORD const* const guid = *(DWORD const* const*)(target + 8);
+            if (guid[0] == lo && guid[1] == hi)
+                return 0;                // nothing over the watched unit itself
+        }
+        *isPlayer = self ? 1 : 0;
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+__declspec(naked) static void DamageSourceHook()
+{
+    __asm {
+        push eax                            // WGUID* source
+        mov  ecx, dword ptr [esp + 4]       // the caller tells where its target is
+        xor  edx, edx
+        cmp  ecx, kRetDamageText
+        jne  notDamage
+        mov  edx, edi
+        jmp  haveTarget
+    notDamage:
+        cmp  ecx, kRetHealText
+        jne  notHeal
+        mov  edx, esi
+        jmp  haveTarget
+    notHeal:
+        cmp  ecx, kRetMissText
+        jne  haveTarget
+        mov  edx, dword ptr [ebp - 4]
+    haveTarget:
+        push edx                            // target unit (or 0)
+        push dword ptr [esp + 0Ch]          // bool* isPlayer
+        push eax                            // WGUID* source
+        call WatchedDamageSource
+        add  esp, 0Ch
+        cmp  eax, -1
+        je   original
+        add  esp, 4                         // the saved source
+        ret                                 // al = the answer; the caller pops its arg
+    original:
+        pop  eax
+        push ebp                            // the 6 bytes the jmp replaced
+        mov  ebp, esp
+        push esi
+        mov  esi, eax
+        jmp  dword ptr [g_damageSourceResume]
+    }
+}
+
 // After a movement key: the server puts the player where the unit stands
 // (BGReplay.cpp, SPECTATE OFF LAND). The camera stays on the unit until then,
 // so it does not swing back to where the player was for a moment first.
@@ -261,6 +393,11 @@ static bool Landed()
 // on after a replay restart re-creates the unit), or hand it back.
 static void CameraTick()
 {
+    if (g_on)
+        BorrowCombatTextUnit();
+    else
+        ReturnCombatTextUnit();
+
     if (!g_on)
     {
         if (g_landing)
@@ -437,6 +574,7 @@ static void StopFollow()
     InterlockedExchange(&g_on, 0);
     InterlockedExchange(&g_needRestore, 0);
     InterlockedExchange(&g_landing, 0);
+    ReturnCombatTextUnit();
     RestoreCamera();
     InterlockedExchange(&g_tick, 0);
 }
@@ -507,9 +645,10 @@ static int Spectate(void* L)
     }
     // 2: knows "focus" and lands the camera after a movement key.
     // 3: the focus is set without the addon's taint (2's was always refused).
+    // 4: the watched player's damage numbers and combat text.
     if (arg && !_stricmp(arg, "version"))
     {
-        pLuaPushNumber(L, 3.0);
+        pLuaPushNumber(L, 4.0);
         return 1;
     }
 
@@ -597,6 +736,12 @@ void Spectate_WorldLuaReady()
     InterlockedExchange(&g_landing, 0);
     g_lockCamera = NULL;
     g_focusBorrowed = 0;               // the old world's focus is gone with it
+    if (g_ctBorrowed)                  // the combat text back on the player
+    {
+        g_ctBorrowed = 0;
+        kCombatTextUnit[0] = g_ctSaved[0];
+        kCombatTextUnit[1] = g_ctSaved[1];
+    }
     pRegisterFunction("CenturionSpectate", (void*)kLuaThunk);
 }
 
@@ -633,10 +778,27 @@ void Spectate_Install()
     if (SigOk(kInteract, kInteractSig, sizeof(kInteractSig), "CGGameUI interact") &&
         JumpTo(kInteract, (void*)&InteractHook))
         g_ready |= 2;
+    // Damage numbers: a 6-byte patch (jmp + nop) on the world-text gate, and
+    // the combat-text unit global, checked through the one function that
+    // writes it.
+    if (SigOk(kDamageSource, kDamageSourceSig, sizeof(kDamageSourceSig), "world-text source gate") &&
+        SigOk(kCombatTextUnitSite, kCombatTextUnitSig, sizeof(kCombatTextUnitSig), "combat-text unit") &&
+        JumpTo(kDamageSource, (void*)&DamageSourceHook))
+    {
+        DWORD old = 0;
+        BYTE* const nop = (BYTE*)(kDamageSource + 5);
+        if (VirtualProtect(nop, 1, PAGE_EXECUTE_READWRITE, &old))
+        {
+            *nop = 0x90;
+            VirtualProtect(nop, 1, old, &old);
+            FlushInstructionCache(GetCurrentProcess(), nop, 1);
+        }
+        g_ready |= 8;
+    }
     // The focus is only called, never patched.
     if (SigOk(kSetFocus, kSetFocusSig, sizeof(kSetFocusSig), "SetFocus") &&
         SigOk(kSetFocusTaintTest, kSetFocusTaintSig, sizeof(kSetFocusTaintSig), "SetFocus taint test"))
         g_ready |= 4;
-    Log("installed (normal camera + yaw lock, right-click %s, focus %s)",
-        (g_ready & 2) ? "on" : "OFF", (g_ready & 4) ? "on" : "OFF");
+    Log("installed (normal camera + yaw lock, right-click %s, focus %s, damage text %s)",
+        (g_ready & 2) ? "on" : "OFF", (g_ready & 4) ? "on" : "OFF", (g_ready & 8) ? "on" : "OFF");
 }
