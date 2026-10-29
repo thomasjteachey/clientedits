@@ -87,6 +87,61 @@ __declspec(naked) static DWORD __cdecl CallPlay(unsigned, int)
     }
 }
 
+// Same call shape, with the variation (arg2) chosen by the test. Against a
+// synthetic PlayAnimation that returns arg2, the result shows whether the hook
+// rewrote the variation.
+__declspec(naked) static DWORD __cdecl CallPlayVar(unsigned, int, int)
+{
+    __asm {
+        push ebx
+        push esi
+        mov  eax, dword ptr [esp + 16]     // animId
+        mov  edx, dword ptr [esp + 20]     // variation
+        mov  esi, esp                      // snapshot before the arg pushes
+        push 1                             // arg6
+        push 1                             // arg5
+        push 0                             // arg4 rate
+        push 0                             // arg3
+        push edx                           // arg2 = variation
+        push eax                           // arg1 = animId
+        push -1                            // arg0
+        mov  ecx, dword ptr [esp + 40]     // model
+        mov  ebx, g_play
+        call ebx
+        sub  esi, esp
+        mov  g_espDelta, esi
+        pop  esi
+        pop  ebx
+        ret
+    }
+}
+
+// In-memory M2 just deep enough for JumpFlip_FlipPosition:
+// model+0x10 loaded flag, model+0x2C -> shared, shared+0x150 -> header,
+// header+0x1C/+0x20 -> sequences (stride 0x40: id, variation, frequency, next).
+struct FakeSeq { WORD id, var; DWORD freq; WORD next; };
+static BYTE* BuildFakeModel(BYTE* mem, const FakeSeq* s, int n, bool loaded)
+{
+    memset(mem, 0, 0x1000);
+    BYTE* model = mem;
+    BYTE* shared = mem + 0x200;
+    BYTE* hdr = mem + 0x400;
+    BYTE* seqs = mem + 0x600;
+    *(DWORD*)(model + 0x10) = loaded ? 1 : 0;
+    *(BYTE**)(model + 0x2C) = shared;
+    *(BYTE**)(shared + 0x150) = hdr;
+    *(DWORD*)(hdr + 0x1C) = (DWORD)n;
+    *(BYTE**)(hdr + 0x20) = seqs;
+    for (int i = 0; i < n; ++i) {
+        BYTE* q = seqs + i * 0x40;
+        *(WORD*)q = s[i].id;
+        *(WORD*)(q + 2) = s[i].var;
+        *(DWORD*)(q + 0x10) = s[i].freq;
+        *(WORD*)(q + 0x3C) = s[i].next;
+    }
+    return model;
+}
+
 static void WriteStub(BYTE* at, DWORD value)
 {
     at[0] = 0xB8;                           // mov eax, imm32
@@ -290,6 +345,230 @@ int main()
             sprintf_s(d, "ret=0x%lX", r);
             Check("a second attack animation is not suppressed",
                   r == 0xC0FFEE && hits() == before, d);
+        }
+    }
+
+    // ---- JumpFlip: Acrobatics asks for the zero-weight JumpStart variation ----
+    printf("\nJumpFlip (Acrobatics jump flip)\n");
+    {
+        typedef int (*PosFn)(const void*);
+        typedef void (*JArmFn)(void*, void*, int, int, int, int, int, int);
+        typedef BOOL (*HookFn)(DWORD, char*, int);
+        PosFn pos = (PosFn)GetProcAddress(dll, "JumpFlip_FlipPosition");
+        JArmFn jarm = (JArmFn)GetProcAddress(dll, "JumpFlip_TestArm");
+        HookFn hook = (HookFn)GetProcAddress(dll, "AnimSpeedFix_TestHookAnim");
+        if (!pos || !jarm || !hook) {
+            Check("jump flip entry points exported", false);
+        } else {
+            BYTE* mem = (BYTE*)VirtualAlloc(NULL, 0x8000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            const WORD E = 0xFFFF;
+            FakeSeq stock[] = { {0, 0, 32767, E}, {37, 0, 32767, E}, {38, 0, 32767, E} };
+            FakeSeq human[] = { {0, 0, 32767, E}, {37, 0, 32767, 3}, {38, 0, 32767, E}, {37, 1, 0, E} };
+            FakeSeq belf[]  = { {37, 0, 31129, 1}, {37, 1, 1638, 3}, {38, 0, 32767, E}, {37, 2, 0, E} };
+            FakeSeq nelf[]  = { {37, 0, 24576, 1}, {37, 1, 8191, E} };
+            FakeSeq loop[]  = { {37, 0, 32767, 1}, {37, 1, 100, 0} };
+            char d[96];
+            int r;
+            r = pos(BuildFakeModel(mem, stock, 3, true));
+            sprintf_s(d, "pos=%d", r); Check("stock model: no flip variation", r == -1, d);
+            r = pos(BuildFakeModel(mem, human, 4, true));
+            sprintf_s(d, "pos=%d", r); Check("patched model: flip at chain position 1", r == 1, d);
+            r = pos(BuildFakeModel(mem, belf, 4, true));
+            sprintf_s(d, "pos=%d", r); Check("blood elf: flip after its own alt jump (2)", r == 2, d);
+            r = pos(BuildFakeModel(mem, nelf, 2, true));
+            sprintf_s(d, "pos=%d", r); Check("night elf (weighted stock flip): left alone", r == -1, d);
+            r = pos(BuildFakeModel(mem, loop, 2, true));
+            sprintf_s(d, "pos=%d", r); Check("looping chain is bounded", r == -1, d);
+            r = pos(BuildFakeModel(mem, human, 4, false));
+            sprintf_s(d, "pos=%d", r); Check("model not loaded yet: no decision", r == -1, d);
+            Check("null model is safe", pos(NULL) == -1);
+            Check("unreadable model pointer is safe", pos((void*)0x10) == -1);
+
+            // the hook on a synthetic PlayAnimation that returns its variation arg
+            BYTE* fn = page + 0xA00;
+            static const BYTE retVar[] = {
+                0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20,      // push ebp; mov ebp,esp; sub esp,20h
+                0x8B, 0x45, 0x10,                        // mov eax, [ebp+10h]  (arg2)
+                0x8B, 0xE5, 0x5D, 0xC2, 0x1C, 0x00       // mov esp,ebp; pop ebp; ret 1Ch
+            };
+            memcpy(fn, retVar, sizeof(retVar));
+            g_play = (DWORD)fn;
+            DWORD v = CallPlayVar(0x12340000, 37, -1);
+            sprintf_s(d, "v=%d espDelta=%ld", (int)v, (long)g_espDelta);
+            Check("baseline: synthetic PlayAnimation returns arg2", v == 0xFFFFFFFF && g_espDelta == 0, d);
+            char err[256] = { 0 };
+            Check("hook placed on the synthetic function", hook(g_play, err, sizeof(err)) != FALSE, err);
+
+            BYTE* model = BuildFakeModel(mem, human, 4, true);
+            BYTE* unit = mem + 0x2000;
+            unsigned m = (unsigned)(DWORD_PTR)model;
+
+            jarm(model, unit, 1, 0, 0, 100, 100, 1);
+            v = CallPlayVar(m, 37, -1);
+            sprintf_s(d, "v=%d espDelta=%ld", (int)v, (long)g_espDelta);
+            Check("aura at 100%: JumpStart asks for the flip", v == 1 && g_espDelta == 0, d);
+
+            jarm(model, unit, 1, 0, 0, 0, 0, 1);
+            v = CallPlayVar(m, 37, -1);
+            sprintf_s(d, "v=%d", (int)v); Check("aura at 0%: engine rolls as usual", (int)v == -1, d);
+
+            jarm(model, unit, 0, 0, 0, 100, 100, 1);
+            v = CallPlayVar(m, 37, -1);
+            sprintf_s(d, "v=%d", (int)v); Check("no aura: untouched even at 100%", (int)v == -1, d);
+
+            jarm(model, unit, 1, 1, 0, 0, 100, 1);
+            v = CallPlayVar(m, 37, -1);
+            sprintf_s(d, "v=%d", (int)v); Check("female unit uses the female odds", v == 1, d);
+            jarm(model, unit, 1, 0, 0, 0, 100, 1);
+            v = CallPlayVar(m, 37, -1);
+            sprintf_s(d, "v=%d", (int)v); Check("male unit uses the male odds", (int)v == -1, d);
+
+            jarm(model, unit, 1, 0, 0, 100, 100, 1);
+            v = CallPlayVar(m, 38, -1);
+            sprintf_s(d, "v=%d", (int)v); Check("other animations untouched", (int)v == -1, d);
+            v = CallPlayVar(m, 37, 0);
+            sprintf_s(d, "v=%d", (int)v); Check("a variation the caller chose is kept", v == 0, d);
+
+            jarm(model, unit, 1, 0, 0, 100, 100, 1);
+            DWORD a = CallPlayVar(m, 37, -1);
+            jarm(model, unit, 1, 0, 0, 0, 0, 0);            // odds change, memory kept
+            DWORD b = CallPlayVar(m, 37, -1);
+            Sleep(350);                                  // > the 300 ms decision window
+            DWORD c = CallPlayVar(m, 37, -1);
+            sprintf_s(d, "first=%d again=%d later=%d", (int)a, (int)b, (int)c);
+            Check("one jump gets one answer; the next jump rolls again",
+                  a == 1 && b == 1 && (int)c == -1, d);
+
+            // night elf: stock weighted flip at 1, Acrobatics double flip (weight 0) at 2
+            FakeSeq nedbl[] = { {37, 0, 24576, 1}, {37, 1, 8191, 2}, {37, 2, 0, E} };
+            BYTE* ne = BuildFakeModel(mem + 0x5000, nedbl, 3, true);
+            unsigned nm = (unsigned)(DWORD_PTR)ne;
+            r = pos(ne);
+            sprintf_s(d, "pos=%d", r); Check("night elf: double flip at chain position 2", r == 2, d);
+            jarm(ne, unit, 1, 0, 1, 100, 100, 1);
+            v = CallPlayVar(nm, 37, -1);
+            sprintf_s(d, "v=%d", (int)v); Check("night elf + aura, hit: asks for the double flip", v == 2, d);
+            jarm(ne, unit, 1, 0, 1, 0, 0, 1);
+            v = CallPlayVar(nm, 37, -1);
+            sprintf_s(d, "v=%d", (int)v); Check("night elf + aura, miss: plain jump, no single flip", v == 0, d);
+            jarm(ne, unit, 0, 0, 1, 100, 100, 1);
+            v = CallPlayVar(nm, 37, -1);
+            sprintf_s(d, "v=%d", (int)v); Check("night elf without aura: stock roll untouched", (int)v == -1, d);
+            jarm(ne, unit, 1, 0, 1, 0, 0, 1);
+            DWORD n1 = CallPlayVar(nm, 37, -1);
+            jarm(ne, unit, 1, 0, 1, 100, 100, 0);           // odds change, memory kept
+            DWORD n2 = CallPlayVar(nm, 37, -1);
+            sprintf_s(d, "first=%d again=%d", (int)n1, (int)n2);
+            Check("a remembered plain-jump decision is reused too", n1 == 0 && n2 == 0, d);
+
+            BYTE* plain = BuildFakeModel(mem + 0x4000, stock, 3, true);
+            jarm(plain, unit, 1, 0, 0, 100, 100, 1);
+            v = CallPlayVar((unsigned)(DWORD_PTR)plain, 37, -1);
+            sprintf_s(d, "v=%d espDelta=%ld", (int)v, (long)g_espDelta);
+            Check("aura on an unpatched model: untouched", (int)v == -1 && g_espDelta == 0, d);
+
+            // druid forms: the form model (cat, bear, ...) carries the flip at position 1
+            typedef void (*JMountFn)(int);
+            JMountFn jmount = (JMountFn)GetProcAddress(dll, "JumpFlip_TestMounted");
+            if (!jmount) {
+                Check("JumpFlip_TestMounted exported", false);
+            } else {
+                FakeSeq cat[] = { {0, 0, 32767, E}, {37, 0, 32767, 4}, {38, 0, 32767, E},
+                                  {39, 0, 32767, E}, {37, 1, 0, E} };
+                BYTE* form = BuildFakeModel(mem + 0x6000, cat, 5, true);
+                unsigned fm = (unsigned)(DWORD_PTR)form;
+                r = pos(form);
+                sprintf_s(d, "pos=%d", r); Check("druid form model: flip at chain position 1", r == 1, d);
+                jarm(form, unit, 1, 0, 1, 100, 100, 1);
+                v = CallPlayVar(fm, 37, -1);
+                sprintf_s(d, "v=%d", (int)v); Check("night elf druid in form, hit: single flip", v == 1, d);
+                jarm(form, unit, 1, 0, 1, 0, 0, 1);
+                v = CallPlayVar(fm, 37, -1);
+                sprintf_s(d, "v=%d", (int)v); Check("night elf druid in form, miss: plain jump", v == 0, d);
+
+                // a mounted unit never flips (Tiger.m2 is also a Beast Rider mount)
+                jarm(form, unit, 1, 0, 0, 100, 100, 1);
+                jmount(1);
+                v = CallPlayVar(fm, 37, -1);
+                sprintf_s(d, "v=%d", (int)v); Check("mounted + aura at 100%: untouched", (int)v == -1, d);
+                jarm(ne, unit, 1, 0, 1, 0, 0, 1);
+                jmount(1);
+                v = CallPlayVar(nm, 37, -1);
+                sprintf_s(d, "v=%d", (int)v); Check("mounted night elf + aura: stock roll untouched", (int)v == -1, d);
+                jarm(form, unit, 1, 0, 0, 100, 100, 1);    // arming again dismounts
+                v = CallPlayVar(fm, 37, -1);
+                sprintf_s(d, "v=%d", (int)v); Check("dismounted again: flips", v == 1, d);
+
+                // ---- Moonkin leap: Fly while in the air from Feral Charge - Moonkin ----
+                typedef void (*JMoveFn)(int, int, float);
+                typedef int (*HasFn)(const void*, DWORD);
+                JMoveFn jmove = (JMoveFn)GetProcAddress(dll, "JumpFlip_TestMove");
+                HasFn has = (HasFn)GetProcAddress(dll, "JumpFlip_HasAnim");
+                if (!jmove || !has) {
+                    Check("moonkin flap entry points exported", false);
+                } else {
+                    // fn+8 is the displacement of `mov eax, [ebp+X]`: 0x10 returns the
+                    // variation (arg2), 0x0C the animation id (arg1)
+                    auto play = [&](unsigned mm, int anim, int var, bool readAnim) -> DWORD {
+                        fn[8] = readAnim ? 0x0C : 0x10;
+                        FlushInstructionCache(GetCurrentProcess(), fn, 16);
+                        DWORD res = CallPlayVar(mm, anim, var);
+                        fn[8] = 0x10;
+                        FlushInstructionCache(GetCurrentProcess(), fn, 16);
+                        return res;
+                    };
+                    FakeSeq owl[] = { {0, 0, 32767, E}, {37, 0, 32767, 5}, {38, 0, 32767, E},
+                                      {40, 0, 32767, E}, {135, 0, 32767, E}, {37, 1, 0, E} };
+                    BYTE* mk = BuildFakeModel(mem + 0x7000, owl, 6, true);
+                    unsigned mkm = (unsigned)(DWORD_PTR)mk;
+                    Check("moonkin model has Fly", has(mk, 135) == 1);
+                    Check("cat form model has no Fly", has(form, 135) == 0);
+                    Check("HasAnim on a null model is safe", has(NULL, 135) == 0);
+
+                    jarm(mk, unit, 1, 0, 0, 100, 100, 1);  // Acrobatics at 100% too
+                    jmove(31, 1, -24.1f);                  // Feral Charge - Moonkin launch
+                    v = play(mkm, 37, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("leap: JumpStart becomes Fly", v == 135, d);
+                    v = play(mkm, 37, -1, false);
+                    sprintf_s(d, "v=%d", (int)v); Check("leap: Fly is rolled, no flip variation", (int)v == -1, d);
+                    jmove(31, 1, -3.0f);                   // fall re-based mid-air (0x987410)
+                    v = play(mkm, 38, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("leap, re-based mid-air: Jump stays Fly", v == 135, d);
+                    v = play(mkm, 40, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("leap: Fall becomes Fly", v == 135, d);
+                    v = play(mkm, 39, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("leap: landing (JumpEnd) untouched", v == 39, d);
+                    jmove(31, 0, 0.0f);                    // on the ground
+                    v = play(mkm, 38, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("landed: Jump untouched", v == 38, d);
+                    jmove(31, 1, -3.0f);
+                    v = play(mkm, 40, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("after landing the leap is forgotten", v == 40, d);
+
+                    jarm(mk, unit, 1, 0, 0, 100, 100, 1);
+                    jmove(31, 1, -7.95f);                  // an ordinary jump
+                    v = play(mkm, 37, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("moonkin jump: JumpStart kept", v == 37, d);
+                    jarm(mk, unit, 1, 0, 0, 100, 100, 1);
+                    jmove(31, 1, -7.95f);
+                    v = play(mkm, 37, -1, false);
+                    sprintf_s(d, "v=%d", (int)v); Check("moonkin jump + Acrobatics: still flips", v == 1, d);
+
+                    jarm(mk, unit, 0, 0, 0, 0, 0, 1);
+                    jmove(1, 1, -24.1f);                   // cat form, launched as fast
+                    v = play(mkm, 37, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("not in Moonkin Form: untouched", v == 37, d);
+                    jarm(mk, unit, 0, 0, 0, 0, 0, 1);
+                    jmove(31, 1, 24.1f);                   // falling fast DOWN
+                    v = play(mkm, 40, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("fast downward fall: untouched", v == 40, d);
+                    jarm(form, unit, 0, 0, 0, 0, 0, 1);
+                    jmove(31, 1, -24.1f);                  // a model without Fly
+                    v = play(fm, 37, -1, true);
+                    sprintf_s(d, "anim=%d", (int)v); Check("model without Fly: untouched", v == 37, d);
+                }
+            }
+            VirtualFree(mem, 0, MEM_RELEASE);
         }
     }
 

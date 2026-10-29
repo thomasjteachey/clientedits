@@ -49,6 +49,8 @@
 #include "sndguard.h"
 #include "spectate.h"
 #include "unitbars.h"
+#include "jumpflip.h"
+#include "reactive.h"
 
 #define DEFAULT_LOCK_ANIMS   "119,223"     // StealthWalk, StealthRun
 #define DEFAULT_ATTACK_ANIMS "16,17,18,19,46,49,85,86,87,88,107,117,482"
@@ -210,6 +212,15 @@ static bool PlaceDetour(DWORD site, const BYTE* sig, size_t sigLen, void* target
 
 // Self-test only: arm SwingGuard and hook PlayAnimation at a scratch address,
 // so the suppress path's stack arithmetic can be verified without the game.
+// Self-test only: place the PlayAnimation hook on another scratch function (the
+// jump flip test needs one that returns its variation argument).
+extern "C" __declspec(dllexport)
+BOOL AnimSpeedFix_TestHookAnim(DWORD animSite, char* err, int errLen)
+{
+    return PlaceDetour(animSite, kAnimSig, sizeof(kAnimSig), (void*)AnimHook,
+                       &g_animRet, err, (size_t)errLen) ? TRUE : FALSE;
+}
+
 extern "C" __declspec(dllexport)
 BOOL AnimSpeedFix_TestArmGuard(DWORD animSite, int windowMs, char* err, int errLen)
 {
@@ -285,7 +296,8 @@ static void StartTrace(void)
         g_traceOpcodes = 0;
         g_dropReplay = 0;              // no packet gate -> do not risk it
     }
-    if ((wantAnimHook || g_guardOn) &&
+    // Acrobatics (jumpflip.cpp) rides on the same hook
+    if ((wantAnimHook || g_guardOn || JumpFlip_WantsAnimHook()) &&
         !PlaceDetour(kAnimSite, kAnimSig, sizeof(kAnimSig), (void*)AnimHook,
                      &g_animRet, err, sizeof(err))) {
         ReportFailure(err);
@@ -476,9 +488,15 @@ static void Install(HMODULE self)
             ReportFailure(err);
     }
 
+    // Acrobatics jump flip: its own [JumpFlip] section, ON by default. It only
+    // verifies its client functions here; it runs inside the PlayAnimation hook
+    // that StartTrace places, so it has to be set up first.
+    JumpFlip_LoadSettings(g_dir);
+    JumpFlip_Install();
+
     // Tracing and SwingGuard are independent of the gameplay patch, so you can
     // run either with [AnimSpeed] Enabled=0.
-    if (g_tracePath[0] || g_guardOn)
+    if (g_tracePath[0] || g_guardOn || JumpFlip_WantsAnimHook())
         StartTrace();
 
     // Player collision is fully independent of everything above; it reads its own
@@ -520,6 +538,12 @@ static void Install(HMODULE self)
     // 0x0094BF6B); that channel now pans centre instead. [SoundGuard], ON.
     SndGuard_LoadSettings(g_dir);
     SndGuard_Install();
+
+    // A reactive ability (Execute, Hammer of Wrath, ...) the server unlearned
+    // stayed on the client's trigger-activate list, so an All-Star life kept
+    // getting the previous lives' "Hammer of Wrath!" alerts. [ReactiveList], ON.
+    Reactive_LoadSettings(g_dir);
+    Reactive_Install();
 }
 
 // -------------------------------------------------------- dinput8.dll proxy

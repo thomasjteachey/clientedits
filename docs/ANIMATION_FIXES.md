@@ -295,6 +295,109 @@ Reading it:
 Records flush every 32 KB, so exit the client normally to get the tail; killing
 it loses the last block.
 
+## Jump flip (Acrobatics, `src\jumpflip.cpp`)
+
+The night elf forward flip for every race, for units with the Acrobatics aura
+(spell 94301, from shirt enchant 3901 / "Enchant Shirt - Acrobatics" 94302).
+
+**How the stock flip works.** NightElfMale/Female.m2 carry two JumpStart (37)
+sequences; variation 1 spins the Root bone (key bone 26, the hips) a full turn
+forward. Weights (`M2Sequence.frequency`, sums to 32767): male 24576/8191 (25%
+flip), female 16383/16383 (50%). Every other playable model has only
+variation 0 (blood elves have a non-flip variation 1).
+
+**Verified in Wow.exe 12340 (2026-10-25):**
+
+| address | what |
+|---|---|
+| `0x832AB0` | `CM2Model::PlayAnimation`, thiscall, `ret 0x1C`: arg0 key bone (-1 = whole model), arg1 animation id, **arg2 variation (-1 = roll)**, arg4 float rate. Unit animation code passes -1 (e.g. `0x71559A`). Not loaded (`model+0x10` bit 0 clear) = request queued with the same args (`0x832AE4`). |
+| `0x826350` | resolves the animation id through AnimationData fallbacks (out param). |
+| `0x8260C0` | `(m2hdr, animId, variation)` -> sequence index: head from the id hash, then walks `variationNext` (+0x3C) **variation steps**; past the end returns 0xFFFF. |
+| `0x832BE3` | 0xFFFF (variation not found) falls back to the head and **the roll**, so asking an unpatched model for a variation it lacks is harmless. |
+| `0x826E60` | the roll: `rand()` (`0x88B867`, 0..0x7FFF), walk the chain, pick the first with `r < freq` (freq read as a **dword** at +0x10), else `r -= freq`. **A zero weight never wins.** |
+| `model+0x2C` -> `+0x150` | CM2Shared -> in-memory M2 header (offsets fixed up); header +0x1C/+0x20 = sequence count/array, stride 0x40. |
+| `unit+0xB4` | the unit's own CM2Model (also used by goeditor). |
+| unit descriptors `+0x5C` | UNIT_FIELD_BYTES_0; byte 2 = gender (1 = female). |
+
+**Design.** `tools\mpqpy\add_jump_flip.py` appends a flip to every non-night-elf
+model as an extra JumpStart variation **with weight 0**, at the end of the chain
+(position 1; position 2 on blood elves). Stock roll never picks it, so models
+behave exactly like stock for anyone without the DLL rule. `JumpFlipAnim`
+(called from `AnimHook` before SwingGuard) handles `animId == 37 && variation ==
+-1`: finds the zero-weight variation's chain position in the model, resolves the
+unit owning the model (active player first, then `EnumVisibleObjects`), and if
+that unit has aura 94301 rolls 25% (male) / 50% (female) and on a hit rewrites
+arg2. One decision per model per 300 ms, so a jump that reaches PlayAnimation
+twice never half-flips.
+
+**Night elves get a double flip** (2026-10-25): their models carry a zero-weight
+variation at chain position 2 built on their own flip (variation 1) plus one
+more turn (`add_jump_flip.py --base-var 1`, donor = the same model; 737 deg male,
+716 deg female). With the aura, a hit asks for the double and a miss asks for
+variation 0 (plain jump), so the stock single flip does not also appear - race
+from UNIT_FIELD_BYTES_0 byte 0 (4 = night elf). Without the aura nothing changes.
+
+**Druid forms flip too** (2026-10-28, client-tweaks 1.00030, patch-4 1.00006,
+hd-creatures 1.00008 once published). While shapeshifted, `unit+0xB4` is the form
+model, so nothing in the hook is form-specific: the form models just carry the same
+zero-weight flip at chain position 1, built from the stock male night elf flip by
+`add_jump_flip.py` (all front flips, like the night elf's; checked with
+`render_m2_anim.py`). The models, per CreatureDisplayInfo -> CreatureModelData:
+
+| form | HD Creatures off (patch-4) | HD Creatures on (patch-F) |
+|---|---|---|
+| cat | `DRUIDCAT\DruidCat`, `DruidCatTauren\DruidCatTauren` | same paths, HD copies |
+| bear / dire bear | `DruidBear\DruidBear`, `DruidBear\DruidBearTauren` | same paths, HD copies |
+| moonkin | `DruidOwlbear\DruidOwlBear`, `DruidOwlbear\DruidOwlBearTauren` | same paths, HD copies |
+| travel (918) | `Tiger\Tiger` (patch-4's own copy, with the Beast Rider seat fix) | `DruidTravel\DruidTravel` |
+| tree of life (864) | `Ent\Ent` | `DruidEnt\DruidEnt` |
+
+Flight forms have no Root key bone and aquatic form never jumps, so they are left
+out. Every non-night-elf race shares the night elf (Alliance) or tauren (Horde) form
+models (`Unit::GetModelForForm`). A night elf druid in form gets a single flip on a
+hit and a plain jump on a miss (the form model has no stock flip to suppress).
+
+**Mounted units never flip.** `Tiger.m2` and `Ent.m2` are shared with NPCs (harmless:
+no aura), and Tiger is also a Beast Rider mount - the hunter rides the pet's own
+model, and the rider would stay put while the tiger spun. So the hook leaves any
+unit with `UNIT_FIELD_MOUNTDISPLAYID` (descriptor `+0x114`) set to the engine.
+
+**Moonkin leap flap** (2026-10-28, client-tweaks 1.00031, patch-4 1.00007). Feral
+Charge - Moonkin (83111) is a knockback with a fixed 2.5 s arc: `EffectJumpDest`
+sends speedZ = 0.5 * g * 2.5 = **24.1 yd/s** up, against 7.96 for a jump. In the same
+PlayAnimation hook, before the flip, `MoonkinFlap` turns JumpStart / Jump / Fall
+(37 / 38 / 40) into **Fly (135)** for a unit in Moonkin Form (`UNIT_FIELD_BYTES_2`
+byte 3 = 31, descriptor `+0x1E8`) that is falling and was launched faster than 20
+yd/s, until it is seen on the ground again. JumpEnd (39) plays as usual. The HD
+moonkin already has Blizzard's Fly (667 ms, two beats); the stock DruidOwlBear /
+DruidOwlBearTauren got one from `tools\mpqpy\add_wing_flap.py`: their own Hover
+(193) with the ArmL/ArmR shoulders swung +35 +/- 40 deg about the model's forward
+axis (converted into the parent bone's frame each key) and the elbows trailing,
+8 beats per 2667 ms. A model without Fly is never asked for it.
+
+Verified in Wow.exe 12340 for this (unit's embedded CMovement = `unit+0x788`):
+
+| address | what |
+|---|---|
+| `0x4F4D40` | movement info reader: flags `+0x10`, flags2 `+0x14`, time `+0x00`, pos `+0x28`, facing `+0x34`, pitch `+0x38`, fall time `+0x3C`; if flags & 0x1000: jump z speed `+0x40`, sin `+0x44`, cos `+0x48`, xy speed `+0x4C` |
+| `0x988370` | start falling: CMovement flags `+0x44` \|= 0x1000, fall timer `+0x80` = 0, start z `+0x84`, **launch z speed `+0xB8`** (negative = up) |
+| `0x986E10` | current vertical speed = `[+0xB8]` + `[+0x80]` ms * gravity (`0xA32F74` = 19.2911), capped by terminal speed |
+| `0x987410` | re-bases a fall mid-air: `+0xB8` := current speed, timer := 0 (so `+0xB8` is the launch speed only near the start; the DLL remembers the leap per unit) |
+| `0x987570` | `GetCurrentSpeed` (run/walk/swim/fly speeds at `+0x90..+0xA8`) |
+
+`[JumpFlip]` in AnimSpeedFix.ini also takes `MoonkinFlap` (1) and `MoonkinLaunch`
+(20, yd/s upward; strictly faster counts). Any launch that fast while in Moonkin
+Form flaps, not only the charge. Centurion Leap (81271) launches at exactly
+`Centurion.LeapZSpeed` = 20, so it does not - raise MoonkinLaunch's compiled default
+if that config ever goes above 20.
+
+`[JumpFlip]` in AnimSpeedFix.ini: `Enabled` (1), `Aura` (94301), `ChanceMale`
+(25), `ChanceFemale` (50), `Debug` (0; 1 logs every JumpStart decision to
+AnimSpeedFix.log).
+
+The aura must be **non-passive** (passive auras never reach the client) and is
+hidden with AttributesEx 0x12000000, like the name markers.
+
 ## Related tooling
 
 `tools\mpqpy\anim_movespeed.py` reports the `movespeed` of every movement

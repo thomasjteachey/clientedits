@@ -25,6 +25,8 @@
 #include <windows.h>
 #include <stdio.h>
 
+#include "jumpflip.h"   // AnimHook calls JumpFlipAnim
+
 // hook sites -----------------------------------------------------------------
 
 // 0x632013: mov eax, [edi + esi*4 + 0x53c]   (handler = table[opcode], esi = opcode)
@@ -398,7 +400,8 @@ __declspec(naked) static void SlotHook()
 
 // Entered by a jmp planted at 0x832AB0, i.e. before the prologue - so the stack
 // is still exactly as at function entry and ecx still holds `this`:
-//   [esp+0]=retaddr [esp+4]=arg0 [esp+8]=arg1(animId) ... [esp+0x14]=arg4(float rate)
+//   [esp+0]=retaddr [esp+4]=arg0 [esp+8]=arg1(animId) [esp+0xC]=arg2(variation)
+//   ... [esp+0x14]=arg4(float rate)
 __declspec(naked) static void AnimHook()
 {
     __asm {
@@ -406,6 +409,14 @@ __declspec(naked) static void AnimHook()
         pushfd
         mov  eax, esp
         add  eax, 36                    // pushad(32) + pushfd(4) -> original esp
+        lea  edx, [eax + 4]             // &arg0, so args[1]=animId, args[2]=variation
+        push edx
+        push ecx                        // this (CM2Model*)
+        call JumpFlipAnim               // Acrobatics: may rewrite the variation in place
+        add  esp, 8
+        mov  ecx, dword ptr [esp + 28]  // `this` again - pushad saved it, the call clobbered it
+        mov  eax, esp
+        add  eax, 36
         push dword ptr [eax + 0x14]     // arg4: rate, as raw bits (no FPU)
         push dword ptr [eax + 8]        // arg1: animation id
         push ecx                        // this (CM2Model*)
