@@ -1,31 +1,33 @@
 #!/bin/bash
-# addons_replace_allstar.sh: replace CENTURION_AllStar/CENTURION_AllStar.lua in
-# the live addons.zip with the staged one, every other entry byte for byte as
-# it was, then bump addons.version LAST and read both back over HTTP. The
-# replace twin of addons_add_allstar.sh. Refuses if the folder is not in the
-# zip yet, or if the staged file is already what the zip holds.
+# addons_replace_allstar.sh: replace CENTURION_AllStar's .toc and .lua in the
+# live addons.zip with the staged ones, every other entry byte for byte as it
+# was, then bump addons.version LAST and read both back over HTTP. The replace
+# twin of addons_add_allstar.sh. Refuses if the folder is not in the zip yet,
+# or if both staged files are already what the zip holds.
 set -e
-TAG=allstar-lives
+TAG=allstar-macros
 P=/var/www/html/downloads/patches
 W=~/allstar-20261028/client
 D=CENTURION_AllStar
-F=$D.lua
+FILES="$D.toc $D.lua"
 cd $W
-[ -f "$F" ] || { echo "no $F in $W"; exit 1; }
+for f in $FILES; do [ -f "$f" ] || { echo "no $f in $W"; exit 1; }; done
 CUR=$(cat $P/addons.version)
 cp -p $P/addons.zip live.zip
-unzip -l live.zip | grep -q " $D/$F\$" || { echo "$D/$F is not in the live zip"; exit 1; }
-unzip -p live.zip $D/$F | cmp -s - $F && { echo "live $D/$F is already the staged one"; exit 1; }
+for f in $FILES; do unzip -l live.zip | grep -q " $D/$f\$" || { echo "$D/$f is not in the live zip"; exit 1; }; done
+same=0
+for f in $FILES; do unzip -p live.zip $D/$f | cmp -s - $f && same=$((same + 1)); done
+[ "$same" -eq 2 ] && { echo "live $D is already the staged one"; exit 1; }
 rm -rf old new stage && mkdir -p old new stage/$D
 (cd old && unzip -q ../live.zip)
 cp live.zip addons.zip
-cp $F stage/$D/
-(cd stage && zip -q -6 ../addons.zip $D/$F)
+for f in $FILES; do cp $f stage/$D/; done
+(cd stage && zip -q -6 ../addons.zip $D/$D.toc $D/$D.lua)
 (cd new && unzip -q ../addons.zip)
 unzip -tq addons.zip
-cmp -s new/$D/$F $F && echo "new $D/$F in the zip: ok" || { echo "NEW FILE MISMATCH $F"; exit 1; }
-(cd old && find . -type f | sort | xargs -d '\n' md5sum) | grep -v " ./$D/$F\$" > old.md5
-(cd new && find . -type f | sort | xargs -d '\n' md5sum) | grep -v " ./$D/$F\$" > new.md5
+for f in $FILES; do cmp -s new/$D/$f $f && echo "new $D/$f in the zip: ok" || { echo "NEW FILE MISMATCH $f"; exit 1; }; done
+(cd old && find . -type f | sort | xargs -d '\n' md5sum) | grep -v " ./$D/$D\.\(toc\|lua\)\$" > old.md5
+(cd new && find . -type f | sort | xargs -d '\n' md5sum) | grep -v " ./$D/$D\.\(toc\|lua\)\$" > new.md5
 cmp -s old.md5 new.md5 && echo "other entries: $(wc -l < old.md5) identical" || { echo "OTHER ENTRIES CHANGED"; diff old.md5 new.md5 | head; exit 1; }
 echo "entries: live $(unzip -l live.zip | tail -1 | awk '{print $2}'), new $(unzip -l addons.zip | tail -1 | awk '{print $2}')"
 [ "$(cat $P/addons.version)" = "$CUR" ] && cmp -s live.zip $P/addons.zip || { echo "live addons moved while staging - rerun"; exit 1; }
@@ -38,5 +40,5 @@ echo "addons $CUR -> $(cat $P/addons.version) ($(stat -c %s $P/addons.version) b
 echo "served version: $(curl -s --max-time 10 http://127.0.0.1/downloads/patches/addons.version)"
 curl -s --max-time 60 -o served.zip http://127.0.0.1/downloads/patches/addons.zip
 cmp -s served.zip addons.zip && echo "served zip identical" || { echo "SERVED ZIP DIFFERS"; exit 1; }
-unzip -p served.zip $D/$F | cmp -s - $F && echo "served $D/$F matches" || { echo "SERVED FILE DIFFERS"; exit 1; }
+for f in $FILES; do unzip -p served.zip $D/$f | cmp -s - $f && echo "served $D/$f matches" || { echo "SERVED FILE DIFFERS $f"; exit 1; }; done
 rm -rf old new stage served.zip live.zip

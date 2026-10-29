@@ -19,7 +19,8 @@
 -- or wears a starter template). None of it is ever saved: SaveBindings is not
 -- called, and RESET loads the player's real set back from the client's files.
 --
--- ALLSTAR:LIVES:<left>:<total> puts the player's own lives on screen.
+-- ALLSTAR:LIVES:<left>:<total> puts the player's own lives on screen, and
+-- ALLSTAR:MAC:* lines bring the borrowed character's own macros (see Macros).
 -- Without the server's lines this addon does nothing.
 
 local QUIET_FOR = 5            -- seconds after the server's line
@@ -167,6 +168,135 @@ local function OutsideArena()
 	return instanceType ~= "arena"
 end
 
+-- Macros --------------------------------------------------------------------
+-- A bar button can only point at a macro of the character the client plays,
+-- so a borrowed character's own macros are made here, as macros of the
+-- player's character, for as long as that life lasts, put on the buttons they
+-- sat on, and deleted again at the next MAC:RESET (every swap and the restore
+-- begin with one):
+--   MAC:B:<buttons>:<icon>:<name>, MAC:L:<line> and MAC:C:<more of the line>,
+--   MAC:E per macro, then MAC:DONE.
+-- What was made is remembered per character (CENTURION_AllStarMade), and
+-- anything left over - a disconnect mid-match - goes at the next login.
+local MAX_ACCOUNT = MAX_ACCOUNT_MACROS or 36
+local MAX_CHARACTER = MAX_CHARACTER_MACROS or 18
+local macroIncoming = {}
+local macroCurrent
+local macroResetPending = false
+local macroMakePending
+local iconByTexture
+
+local function MacroIcon(texture)
+	if ( not iconByTexture ) then
+		iconByTexture = {}
+		for i = 1, GetNumMacroIcons() do
+			local path = GetMacroIconInfo(i)
+			if ( path ) then
+				local short = string.match(path, "([^\\]+)$") or path
+				iconByTexture[string.lower(short)] = iconByTexture[string.lower(short)] or i
+			end
+		end
+	end
+	return iconByTexture[string.lower(texture or "")] or 1
+end
+
+local function DeleteMadeMacros()
+	local made = CENTURION_AllStarMade
+	if ( type(made) ~= "table" or #made == 0 ) then
+		return
+	end
+	local _, numCharacter = GetNumMacros()
+	for index = MAX_ACCOUNT + numCharacter, MAX_ACCOUNT + 1, -1 do
+		local name, _, body = GetMacroInfo(index)
+		for k = #made, 1, -1 do
+			if ( made[k].name == name and made[k].body == body ) then
+				DeleteMacro(index)
+				table.remove(made, k)
+				break
+			end
+		end
+	end
+	-- Anything not found is gone already.
+	wipe(made)
+end
+
+local function MakeMacros(list)
+	if ( type(CENTURION_AllStarMade) ~= "table" ) then
+		CENTURION_AllStarMade = {}
+	end
+	for _, macro in ipairs(list) do
+		local _, numCharacter = GetNumMacros()
+		if ( numCharacter >= MAX_CHARACTER ) then
+			break       -- no room: the server's spell stays on those buttons
+		end
+		local index = CreateMacro(macro.name, MacroIcon(macro.icon), macro.body, 1)
+		if ( index and index > 0 ) then
+			local name, _, body = GetMacroInfo(index)
+			table.insert(CENTURION_AllStarMade, { name = name, body = body })
+			for _, button in ipairs(macro.buttons) do
+				PickupMacro(index)
+				PlaceAction(button + 1)
+				ClearCursor()
+			end
+		end
+	end
+end
+
+-- Making, deleting and placing macros is refused in combat: it waits.
+local function RunMacroWork()
+	if ( InCombatLockdown() ) then
+		return
+	end
+	if ( macroResetPending ) then
+		macroResetPending = false
+		DeleteMadeMacros()
+	end
+	if ( macroMakePending ) then
+		local list = macroMakePending
+		macroMakePending = nil
+		MakeMacros(list)
+	end
+end
+
+local function OnMacroLine(line)
+	if ( line == "RESET" ) then
+		macroIncoming = {}
+		macroCurrent = nil
+		macroMakePending = nil
+		macroResetPending = true
+		RunMacroWork()
+	elseif ( line == "DONE" ) then
+		macroMakePending = macroIncoming
+		macroIncoming = {}
+		RunMacroWork()
+	elseif ( line == "E" ) then
+		if ( macroCurrent ) then
+			table.insert(macroIncoming, macroCurrent)
+			macroCurrent = nil
+		end
+	else
+		local kind, rest = string.match(line, "^(%u):(.*)$")
+		if ( kind == "B" ) then
+			local buttons, icon, name = string.match(rest, "^([%d,]+):([^:]*):(.*)$")
+			if ( buttons ) then
+				macroCurrent = { buttons = {}, icon = icon, name = name, body = "" }
+				for button in string.gmatch(buttons, "%d+") do
+					table.insert(macroCurrent.buttons, tonumber(button))
+				end
+			end
+		elseif ( kind == "L" and macroCurrent ) then
+			if ( macroCurrent.body ~= "" ) then
+				macroCurrent.body = macroCurrent.body .. "\n"
+			end
+			macroCurrent.body = macroCurrent.body .. rest
+		elseif ( kind == "C" and macroCurrent ) then
+			macroCurrent.body = macroCurrent.body .. rest
+		end
+	end
+end
+
+local cleanedAtLogin = false
+
 local listener = CreateFrame("Frame")
 listener:RegisterEvent("CHAT_MSG_ADDON")
 listener:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -177,6 +307,12 @@ listener:SetScript("OnEvent", function(self, event, prefix, message)
 	if ( event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" ) then
 		if ( OutsideArena() ) then
 			livesFrame:Hide()
+			-- Macros a match made and never got to delete.
+			if ( not cleanedAtLogin ) then
+				cleanedAtLogin = true
+				macroResetPending = true
+				RunMacroWork()
+			end
 		end
 		return
 	end
@@ -190,6 +326,7 @@ listener:SetScript("OnEvent", function(self, event, prefix, message)
 		if ( pending ) then
 			ApplyBindings(pending)
 		end
+		RunMacroWork()
 		return
 	end
 	if ( prefix ~= "CCGAME" or type(message) ~= "string" ) then
@@ -199,6 +336,8 @@ listener:SetScript("OnEvent", function(self, event, prefix, message)
 		quietUntil = GetTime() + QUIET_FOR
 	elseif ( string.sub(message, 1, 13) == "ALLSTAR:BIND:" ) then
 		OnBindLine(string.sub(message, 14))
+	elseif ( string.sub(message, 1, 12) == "ALLSTAR:MAC:" ) then
+		OnMacroLine(string.sub(message, 13))
 	else
 		local left, total = string.match(message, "^ALLSTAR:LIVES:(%d+):(%d+)$")
 		if ( left and not OutsideArena() ) then

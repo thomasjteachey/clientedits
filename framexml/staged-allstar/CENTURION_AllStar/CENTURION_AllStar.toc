@@ -1,5 +1,6 @@
 ## Interface: 30300
 ## Title: CENTURION All-Star
-## Notes: Hides the spellbook and skill lines an All-Star class swap prints.
+## Notes: The client side of an All-Star class swap: quiet spellbook lines, the borrowed character's keybindings and macros, and your lives.
 ## Author: Centurion
+## SavedVariablesPerCharacter: CENTURION_AllStarMade
 CENTURION_AllStar.lua
