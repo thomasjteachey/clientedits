@@ -37,16 +37,6 @@ local CLASS_TOKEN = {
 	[6] = "DEATHKNIGHT", [7] = "SHAMAN", [8] = "MAGE", [9] = "WARLOCK", [11] = "DRUID",
 }
 
--- The arenas every client has art for; a map without its own loading screen
--- borrows one of them, always the same one for the same map.
-local STOCK_SCREENS = {
-	SCREENS .. "LoadScreenNagrandArenaBattlegrounds",
-	SCREENS .. "LoadScreenBladesEdgeArena",
-	SCREENS .. "LoadScreenRuinsofLordaeronBattlegrounds",
-	SCREENS .. "LoadScreenDalaranSewersArena",
-	SCREENS .. "LoadScreenOrgrimmarArena",
-}
-
 local MODES = {
 	{ key = "R", name = "Rated",          icon = "Interface\\Icons\\Achievement_Arena_3v3_7" },
 	{ key = "S", name = "Skirmish",       icon = "Interface\\Icons\\Achievement_Arena_2v2_1" },
@@ -143,9 +133,12 @@ local function MapInfo(mapId)
 	local maps = CENTURION_ArenaMaster_Maps or {}
 	local info = maps[mapId]
 	local name = info and info.name or ("Arena " .. tostring(mapId))
+	-- Most of the realm's own arenas have no loading screen at all (their
+	-- Map.dbc row names one no LoadingScreens.dbc has): nil, and SetArenaArt
+	-- shows the arena emblem rather than another arena's picture.
 	local screen = info and info.screen
-	if not screen or screen == "" then
-		screen = STOCK_SCREENS[((tonumber(mapId) or 0) % #STOCK_SCREENS) + 1]
+	if screen == "" then
+		screen = nil
 	end
 	return name, screen
 end
@@ -164,6 +157,29 @@ local function SetScreen(tex, file, w, h, cy, zoom)
 	local top = math.min(math.max(0, (cy or 0.5) - vs / 2), 1 - vs)
 	tex:SetTexture(file)
 	tex:SetTexCoord(left, left + hs, top, top + vs)
+end
+
+-- An arena's picture in a thumbnail frame (holder.art), or, for an arena with
+-- no loading screen, the gold arena emblem on the frame's dark plate.
+local function SetArenaArt(holder, screen, w, h, cy, zoom)
+	if screen then
+		SetScreen(holder.art, screen, w, h, cy, zoom)
+		holder.art:Show()
+		if holder.emblem then
+			holder.emblem:Hide()
+		end
+		return
+	end
+	holder.art:Hide()
+	if not holder.emblem then
+		holder.emblem = holder:CreateTexture(nil, "ARTWORK")
+		holder.emblem:SetWidth(30)
+		holder.emblem:SetHeight(30)
+		holder.emblem:SetPoint("CENTER", holder, "CENTER", 0, 0)
+		holder.emblem:SetTexture("Interface\\Icons\\Achievement_Arena_2v2_7")
+		holder.emblem:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+	end
+	holder.emblem:Show()
 end
 
 local function MakeFont(name, file, size, colour, shadow)
@@ -742,7 +758,7 @@ local function SetThumbs(y, mapIds)
 			local x = x0 + (i - 1) * (tw + gap)
 			t:ClearAllPoints()
 			t:SetPoint("TOPLEFT", poster, "TOPLEFT", x - 1, -(y - 1))
-			SetScreen(t.art, screen, 76, 50, 0.5, 0.8)
+			SetArenaArt(t, screen, 76, 50, 0.5, 0.8)
 			t.name:ClearAllPoints()
 			t.name:SetPoint("CENTER", poster, "TOPLEFT", x + tw / 2, -(y + 62))
 			FitText(t.name, name, tw + gap - 2, fontInk10, fontInk9)
@@ -1415,7 +1431,7 @@ end
 local function DrawCard(c, row)
 	c.row = row
 	local name, screen = MapInfo(row.mapId)
-	SetScreen(c.thumb.art, screen, 76, 57, 0.5, 0.8)
+	SetArenaArt(c.thumb, screen, 76, 57, 0.5, 0.8)
 	FitText(c.arena, name, CW - 95 - 30, fontCardTitle, fontCardSmall)
 	FitText(c.line1, KindText(row), CW - 95 - 8, fontInk10, fontInk9)
 	FitText(c.line2, Ago(row.age) .. "  -  " .. Watched(row.watched), CW - 95 - 8, fontInk9)

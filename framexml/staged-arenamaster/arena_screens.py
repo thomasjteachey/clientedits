@@ -23,6 +23,10 @@ def wdbc(name):
     return rows, s, src
 
 
+if len(sys.argv) > 1:                    # a Map.dbc not yet in the client (just published)
+    _data = open(sys.argv[1], 'rb').read()
+    _orig = artlib.extract
+    artlib.extract = lambda name: (_data, os.path.basename(sys.argv[1])) if name.endswith('Map.dbc') else _orig(name)
 maps, ms, msrc = wdbc('Map.dbc')
 screens, ss, ssrc = wdbc('LoadingScreens.dbc')
 screen_file = {r[0]: ss(r[2]) for r in screens}

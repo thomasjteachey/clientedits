@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "arena-loading-screens",
+  "stage": "/tmp/centmode/arenascreens/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "DBFilesClient\\Map.dbc": "7fcad4bb79906d11c050d3eba6825963"
+  }
+}
