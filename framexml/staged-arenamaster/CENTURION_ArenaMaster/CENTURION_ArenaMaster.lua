@@ -6,7 +6,10 @@
 --   ARENAQUEUE:0        the old ArenaFrame.lua back to its ordinary mode
 --   ARENAQUEUE:MASTER   this addon takes the window over
 --   AM:MODES:<rated>:<skirmish>:<multi>:<shuffle>:<allstar>:<replays>:<squads>
---   AM:LINEUP:<shuffled>:<class>,<name>;...    the All-Star lives, a moment later
+--   AM:LU:BEGIN:<shuffled>:<lives>:<class>:<name>   the All-Star lineup, a moment
+--   AM:LU:O:c<guid>:<class>:<name>                  later: life one, the characters
+--   AM:LU:P:<pick>,<pick>,...                       it can pick, its picks for lives
+--   AM:LU:END                                       two on (c<guid>, s<class>, -)
 --
 -- and then opens the stock arena window, which is put away at once for this
 -- one. The window is the bounty board's: the achievement frame's wood, carved
@@ -16,6 +19,7 @@
 --
 --   ARENAMASTER:JOIN:<R|S|MR|MS|B|A>:<size>:<group 0|1>
 --   ARENABOTS[:0|1]                      the "Arena bot matches" box
+--   ALLSTAR:PICK:<pick>,<pick>,...       the All-Star lives after the first
 --   REPLAYS:LIST:<RECENT|FAV>  REPLAYS:WATCH:<id>  REPLAYS:FAV:<id>:<0|1>
 --
 -- Optional, if the server sends it: AM:POOL:<mapId>,<mapId>,... - the arenas a
@@ -70,7 +74,8 @@ local state = {
 	squads = 4,
 	mode = "S",
 	bracket = { R = 1, S = 2, M = 2, B = 2, A = 4, P = 1 },
-	lineup = nil,               -- { shuffled = bool, { class =, name = }, ... }
+	lineup = nil,               -- { shuffled, lives, first = { class, name }, options = { { id, class, name } }, picks = { id|"-" } }
+	lineupLoading = nil,
 	pool = nil,                 -- mapIds a skirmish can land on, if the server says
 	bots = nil,                 -- the "Arena bot matches" box, as the server last said
 	replays = { RECENT = nil, FAV = nil },
@@ -829,6 +834,326 @@ local function SetPortraits(x, y, w, people, ring)
 	end
 end
 
+-- The All-Star lineup as the player sets it (owner 2026-10-29: "allow players
+-- to rearrange what characters they pick and in what order"). Life one is the
+-- character queuing. Every later life is a button: left-click opens a menu of
+-- the account's level-60 characters, the standard kits and Random, right-click
+-- puts it back on Random, and the arrows beside it move it a place. Each change
+-- goes to the server at once (ALLSTAR:PICK), which keeps it for the character
+-- and answers with the lineup as it holds.
+local CLASS_ORDER = { 1, 2, 3, 4, 5, 7, 8, 9, 11 }
+local MAX_SLOTS = 9
+local slots = {}
+local menuSlot                      -- the pick the menu is for (1 = life two)
+local pickMenu = CreateFrame("Frame", "CenturionArenaMasterPickMenu", am, "UIDropDownMenuTemplate")
+
+local function ClassColour(class)
+	local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[CLASS_TOKEN[class] or ""]
+	if not c then
+		return ""
+	end
+	return string.format("|cff%02x%02x%02x", c.r * 255, c.g * 255, c.b * 255)
+end
+
+local function FindOption(lu, id)
+	for _, o in ipairs(lu.options) do
+		if o.id == id then
+			return o
+		end
+	end
+	return nil
+end
+
+local function PickClass(lu, pick)
+	if not pick or pick == "-" then
+		return nil
+	end
+	if string.sub(pick, 1, 1) == "s" then
+		return tonumber(string.sub(pick, 2))
+	end
+	local o = FindOption(lu, pick)
+	return o and o.class
+end
+
+-- True when another life of the lineup plays that class.
+local function ClassTaken(lu, class, except)
+	if lu.first.class == class then
+		return true
+	end
+	for i = 1, lu.lives - 1 do
+		if i ~= except and PickClass(lu, lu.picks[i]) == class then
+			return true
+		end
+	end
+	return false
+end
+
+local function SendPicks()
+	local lu = state.lineup
+	local picks = {}
+	for i = 1, lu.lives - 1 do
+		picks[i] = lu.picks[i] or "-"
+	end
+	while #picks > 0 and picks[#picks] == "-" do
+		table.remove(picks)
+	end
+	Send("ALLSTAR:PICK:" .. table.concat(picks, ","))
+end
+
+local function SetPick(index, pick)
+	local lu = state.lineup
+	if not lu or not lu.editable then
+		return
+	end
+	lu.picks[index] = pick
+	PlaySound("igMainMenuOptionCheckBoxOn")
+	SendPicks()
+	Draw()
+end
+
+local function MovePick(index, by)
+	local lu = state.lineup
+	local other = index + by
+	if not lu or not lu.editable or other < 1 or other > lu.lives - 1 then
+		return
+	end
+	lu.picks[index], lu.picks[other] = lu.picks[other] or "-", lu.picks[index] or "-"
+	PlaySound("igMainMenuOptionCheckBoxOn")
+	SendPicks()
+	Draw()
+end
+
+local function InitPickMenu(self, level)
+	local lu = state.lineup
+	if not lu or not menuSlot then
+		return
+	end
+	local index = menuSlot
+	local current = lu.picks[index] or "-"
+	local info
+	if level == 2 then
+		for _, class in ipairs(CLASS_ORDER) do
+			local id = "s" .. class
+			local taken = ClassTaken(lu, class, index)
+			info = UIDropDownMenu_CreateInfo()
+			info.text = taken and ClassName(class) or (ClassColour(class) .. ClassName(class) .. "|r")
+			info.checked = current == id
+			info.disabled = taken
+			info.func = function() SetPick(index, id) end
+			UIDropDownMenu_AddButton(info, level)
+		end
+		return
+	end
+
+	info = UIDropDownMenu_CreateInfo()
+	info.text = "Life " .. (index + 1)
+	info.isTitle = true
+	info.notCheckable = true
+	UIDropDownMenu_AddButton(info, level)
+
+	info = UIDropDownMenu_CreateInfo()
+	info.text = "Random"
+	info.checked = current == "-"
+	info.func = function() SetPick(index, "-") end
+	UIDropDownMenu_AddButton(info, level)
+
+	if #lu.options > 0 then
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Your characters"
+		info.isTitle = true
+		info.notCheckable = true
+		UIDropDownMenu_AddButton(info, level)
+		for _, o in ipairs(lu.options) do
+			local id = o.id
+			local taken = ClassTaken(lu, o.class, index)
+			info = UIDropDownMenu_CreateInfo()
+			info.text = taken and (o.name .. "  " .. ClassName(o.class))
+				or (ClassColour(o.class) .. o.name .. "|r  |cff9d9d9d" .. ClassName(o.class) .. "|r")
+			info.checked = current == id
+			info.disabled = taken
+			info.func = function() SetPick(index, id) end
+			UIDropDownMenu_AddButton(info, level)
+		end
+	end
+
+	info = UIDropDownMenu_CreateInfo()
+	info.text = "Standard kit"
+	info.hasArrow = true
+	info.notCheckable = true
+	info.value = "STANDARD"
+	UIDropDownMenu_AddButton(info, level)
+end
+UIDropDownMenu_Initialize(pickMenu, InitPickMenu, "MENU")
+
+local function MakeArrow(dir)
+	local b = CreateFrame("Button", nil, poster)
+	b:SetWidth(24)
+	b:SetHeight(24)
+	local base = "Interface\\Buttons\\UI-SpellbookIcon-" .. dir .. "Page-"
+	b:SetNormalTexture(base .. "Up")
+	b:SetPushedTexture(base .. "Down")
+	b:SetDisabledTexture(base .. "Disabled")
+	b:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+	b:Hide()
+	return b
+end
+
+for i = 1, MAX_SLOTS do
+	local b = CreateFrame("Button", nil, poster)
+	b:SetWidth(42)
+	b:SetHeight(42)
+	b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	b.circle = b:CreateTexture(nil, "ARTWORK")
+	b.circle:SetPoint("CENTER", b, "CENTER")
+	b.ring = b:CreateTexture(nil, "OVERLAY")
+	b.ring:SetTexture("Interface\\AchievementFrame\\UI-Achievement-IconFrame")
+	b.ring:SetAllPoints(b)
+	b.ring:SetTexCoord(0, 0.5625, 0, 0.5625)
+	b.glow = b:CreateTexture(nil, "HIGHLIGHT")
+	b.glow:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+	b.glow:SetBlendMode("ADD")
+	b.glow:SetPoint("CENTER", b, "CENTER")
+	b.name = poster:CreateFontString(nil, "OVERLAY")
+	b.name:SetFontObject(fontInk10)
+	b.sub = poster:CreateFontString(nil, "OVERLAY")
+	b.sub:SetFontObject(fontInk9)
+	b.prev = MakeArrow("Prev")
+	b.next = MakeArrow("Next")
+	b.prev:SetScript("OnClick", function() MovePick(i - 1, -1) end)
+	b.next:SetScript("OnClick", function() MovePick(i - 1, 1) end)
+	b:SetScript("OnClick", function(self, button)
+		local lu = state.lineup
+		if i == 1 or not lu or not lu.editable then
+			return
+		end
+		if button == "RightButton" then
+			CloseDropDownMenus()
+			SetPick(i - 1, "-")
+			return
+		end
+		PlaySound("igMainMenuOptionCheckBoxOn")
+		if menuSlot == i - 1 and DropDownList1 and DropDownList1:IsShown() then
+			CloseDropDownMenus()
+			return
+		end
+		-- Beside the portrait, clear of the names under the row.
+		menuSlot = i - 1
+		ToggleDropDownMenu(1, nil, pickMenu, self, self:GetWidth(), self:GetHeight())
+	end)
+	b:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		if i == 1 then
+			GameTooltip:SetText("Life 1", 1, 1, 1)
+			GameTooltip:AddLine("The character you queue with always plays your first life.", nil, nil, nil, true)
+		else
+			GameTooltip:SetText("Life " .. i, 1, 1, 1)
+			GameTooltip:AddLine("Click to choose who plays it. Right-click for Random.", nil, nil, nil, true)
+			GameTooltip:AddLine("The arrows move it a place.", nil, nil, nil, true)
+		end
+		GameTooltip:Show()
+	end)
+	b:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+	b:Hide()
+	slots[i] = b
+end
+
+local function HideSlots()
+	for _, b in ipairs(slots) do
+		b:Hide()
+		b.name:Hide()
+		b.sub:Hide()
+		b.prev:Hide()
+		b.next:Hide()
+	end
+end
+
+-- What a life shows: { icon texture or class token, name, sub }.
+local function LifeLook(lu, i)
+	if i == 1 then
+		return CLASS_TOKEN[lu.first.class], lu.first.name, "First life"
+	end
+	local pick = lu.picks[i - 1] or "-"
+	if pick == "-" then
+		return nil, "Random", lu.shuffled and "Any class left" or "Next in your list"
+	end
+	if string.sub(pick, 1, 1) == "s" then
+		local class = tonumber(string.sub(pick, 2))
+		return CLASS_TOKEN[class], ClassName(class), "Standard kit"
+	end
+	local o = FindOption(lu, pick)
+	if o then
+		return CLASS_TOKEN[o.class], o.name, ClassName(o.class)
+	end
+	return nil, "Random", "Any class left"
+end
+
+local function SetSlots(y)
+	local lu = state.lineup
+	local n = math.min(MAX_SLOTS, lu.lives)
+	local ring = 42
+	local inner = ring * 0.75
+	local w = PW - 16
+	local step = w / math.max(1, n)
+	local beside = step >= 96
+	for i, b in ipairs(slots) do
+		if i <= n then
+			local cx = 8 + (i - 1) * step + step / 2
+			local token, name, sub = LifeLook(lu, i)
+			b:ClearAllPoints()
+			b:SetPoint("TOPLEFT", poster, "TOPLEFT", cx - ring / 2, -y)
+			b.circle:SetWidth(inner)
+			b.circle:SetHeight(inner)
+			b.glow:SetWidth(inner)
+			b.glow:SetHeight(inner)
+			if token then
+				SetClassIcon(b.circle, token)
+			else
+				b.circle:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+				b.circle:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+				b.circle:Show()
+			end
+			if i == 1 then b.glow:Hide() else b.glow:Show() end
+			b.name:ClearAllPoints()
+			b.name:SetPoint("CENTER", poster, "TOPLEFT", cx, -(y + ring + 6))
+			FitText(b.name, name or "", step - 4, fontInk10, fontInk9)
+			b.sub:ClearAllPoints()
+			b.sub:SetPoint("CENTER", poster, "TOPLEFT", cx, -(y + ring + 18))
+			b.sub:SetText(sub or "")
+			b:Show()
+			b.name:Show()
+			b.sub:Show()
+
+			b.prev:ClearAllPoints()
+			b.next:ClearAllPoints()
+			if beside then
+				b.prev:SetPoint("RIGHT", b, "LEFT", 0, 0)
+				b.next:SetPoint("LEFT", b, "RIGHT", 0, 0)
+			else
+				b.prev:SetPoint("TOPRIGHT", poster, "TOPLEFT", cx, -(y + ring + 26))
+				b.next:SetPoint("TOPLEFT", poster, "TOPLEFT", cx, -(y + ring + 26))
+			end
+			local movable = lu.editable and i > 1
+			if movable then
+				b.prev:Show()
+				b.next:Show()
+				if i > 2 then b.prev:Enable() else b.prev:Disable() end
+				if i < n then b.next:Enable() else b.next:Disable() end
+			else
+				b.prev:Hide()
+				b.next:Hide()
+			end
+		else
+			b:Hide()
+			b.name:Hide()
+			b.sub:Hide()
+			b.prev:Hide()
+			b.next:Hide()
+		end
+	end
+end
+
 -- The arenas a skirmish can be fought in (AM:POOL) - every one of them (owner:
 -- "only shows 5 even though clearly i have like 20"). Up to five: a strip of
 -- pictures with their names. More: two rows of smaller pictures, each named
@@ -1348,6 +1673,9 @@ PAGES.B = {
 	end,
 }
 
+local LIVES_WORD = { "One life", "Two lives", "Three lives", "Four lives", "Five lives",
+	"Six lives", "Seven lives", "Eight lives", "Nine lives" }
+
 PAGES.A = {
 	rows = function()
 		local rows = {}
@@ -1358,30 +1686,25 @@ PAGES.A = {
 	end,
 	draw = function(row)
 		local size = row.size
-		local people, sub
-		if state.lineup then
-			people = {}
-			for _, life in ipairs(state.lineup) do
-				local token = CLASS_TOKEN[life.class]
-				if life.name ~= "" then
-					table.insert(people, { token = token, name = life.name, sub = ClassName(life.class) })
-				else
-					table.insert(people, { token = token, name = ClassName(life.class), sub = "Standard" })
-				end
-			end
-			sub = state.lineup.shuffled and "shuffled every match" or nil
+		local lu = state.lineup
+		local lives = lu and lu.lives or 4
+		local word = LIVES_WORD[lives] or (lives .. " lives")
+		local headingSub
+		if lu and lu.editable then
+			headingSub = "Click a life to choose who plays it. The arrows change the order."
+		elseif lu and lu.shuffled then
+			headingSub = "shuffled every match"
 		end
 		return {
 			banner = SCREENS .. "LoadScreenOrgrimmarArena", cy = 0.5,
 			icon = MODE.A.icon,
 			title = row.label,
-			sub = "Nine lives, one class each",
-			body = "Each death brings you back where you fell as your next character: their gear, talents, keybindings and macros. A class you have no character for comes in its standard kit - the tournament spec and gear. The last team with lives left wins.",
+			sub = word .. ", one class each",
+			body = word .. ", each a different class. Each death brings you back where you fell as the next character of your lineup: their gear, talents, keybindings and macros. A standard kit is the tournament spec and gear. The last team with lives left wins.",
 			heading = "Your lineup",
-			headingSub = sub,
-			people = people,
-			lineup = true,
-			message = not people and "Reading your characters..." or nil,
+			headingSub = headingSub,
+			allstar = lu ~= nil,
+			message = not lu and "Reading your characters..." or nil,
 			join = { mode = "A", size = size, limit = size },
 		}
 	end,
@@ -1411,13 +1734,16 @@ local function DrawPoster(p)
 	end
 
 	HidePortraits()
+	HideSlots()
 	HideThumbs()
 	heading:Hide()
 	subheading:Hide()
 	if p.heading then
 		SetHeading(p.facts and y or 268, p.heading, p.headingSub)
 		local top = (p.facts and y or 268) + (p.headingSub and 25 or 16)
-		if p.people and #p.people > 0 then
+		if p.allstar then
+			SetSlots(top)
+		elseif p.people and #p.people > 0 then
 			if p.lineup then
 				SetPortraits(8, top, PW - 16, p.people, 42)
 			else
@@ -1749,6 +2075,7 @@ local function DrawBattlemaster()
 
 	poster:Show()
 	HidePortraits()
+	HideSlots()
 	HideThumbs()
 	if not bg then
 		plateText:SetText("Battlegrounds")
@@ -2018,16 +2345,59 @@ end
 ------------------------------------------------------------------
 -- the server's side
 ------------------------------------------------------------------
+-- A server from before the picks: AM:LINEUP:<shuffled>:<class>,<name>;...
+-- - the whole lineup, shown as it is.
 local function OnLineup(shuffled, list)
-	local lineup = { shuffled = shuffled == "1" }
+	local lu = { shuffled = shuffled == "1", options = {}, picks = {}, editable = false }
+	local n = 0
 	for _, entry in ipairs(Split(list, ";")) do
 		local parts = Split(entry, ",")
 		local class = tonumber(parts[1])
 		if class then
-			table.insert(lineup, { class = class, name = parts[2] or "" })
+			n = n + 1
+			local name = parts[2] or ""
+			if n == 1 then
+				lu.first = { class = class, name = name }
+			elseif name ~= "" then
+				local id = "c" .. n
+				table.insert(lu.options, { id = id, class = class, name = name })
+				lu.picks[n - 1] = id
+			else
+				lu.picks[n - 1] = "s" .. class
+			end
 		end
 	end
-	state.lineup = lineup
+	lu.lives = n
+	state.lineup = n > 0 and lu or nil
+end
+
+local function OnLineupLine(parts)
+	local what = parts[3]
+	if what == "BEGIN" then
+		state.lineupLoading = {
+			shuffled = parts[4] == "1",
+			lives = math.max(1, math.min(9, tonumber(parts[5]) or 4)),
+			first = { class = tonumber(parts[6]) or 0, name = table.concat(parts, ":", 7) },
+			options = {},
+			picks = {},
+			editable = true,
+		}
+	elseif what == "O" and state.lineupLoading then
+		table.insert(state.lineupLoading.options, {
+			id = parts[4] or "",
+			class = tonumber(parts[5]) or 0,
+			name = table.concat(parts, ":", 6),
+		})
+	elseif what == "P" and state.lineupLoading then
+		for i, pick in ipairs(Split(parts[4] or "", ",")) do
+			state.lineupLoading.picks[i] = pick
+		end
+	elseif what == "END" and state.lineupLoading then
+		state.lineup = state.lineupLoading
+		state.lineupLoading = nil
+		return true
+	end
+	return false
 end
 
 local function OnReplayLine(parts)
@@ -2188,6 +2558,11 @@ local function OnServer(message)
 			state.squads = tonumber(parts[9]) or state.squads
 		elseif what == "LINEUP" then
 			OnLineup(parts[3], table.concat(parts, ":", 4))
+		elseif what == "LU" then
+			-- Drawn once the whole lineup is in.
+			if not OnLineupLine(parts) then
+				return
+			end
 		elseif what == "POOL" then
 			local pool = {}
 			for _, id in ipairs(Split(parts[3] or "", ",")) do
