@@ -147,6 +147,7 @@ check(g.watch == sh[2], 'spectating makes them the POV')
 told = sent_since(mark)
 check(any(('SPECTATE ' + sh[2]) in s for s in told), 'the server is asked for their bars (%s)' % told)
 check(uiparent_shown(), 'the normal UI shows while spectating (their buttons are on it)')
+check(g.MOCK.cvars['Sound_ListenerAtCharacter'] == '0', 'while spectating the sound is heard from the camera')
 g.MOCK.update(0.1)
 check(all(not g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames are hidden while spectating')
 check(g.CenturionReplaySpectateStatus._shown and 'move to stop' in (g.CenturionReplaySpectateStatus.text._text or ''),
@@ -192,6 +193,7 @@ check(any('SPECTATE OFF' in s for s in sent_since(mark)), 'the server is told to
 check(not uiparent_shown(), 'the UI goes back the way the replay had it')
 check(all(g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames come back')
 check(not g.CenturionReplaySpectateStatus._shown, 'the status line goes')
+check(g.MOCK.cvars['Sound_ListenerAtCharacter'] == '1', 'the sound goes back to your own setting')
 check(f(None, 'CHAT_MSG_SYSTEM', 'You have unlearned Polymorph.') is True, '"unlearned" lines just after are hidden too')
 
 # the arena frame right-click
@@ -200,6 +202,12 @@ frame._scripts.OnClick(frame, 'RightButton')
 check(g.MOCK.following == sh[4], "right-clicking a player's arena frame spectates them")
 g.CenturionReplaySpectate_Stop()
 check(g.MOCK.following is None, 'the Spectate button / X stops it')
+
+# logging out while spectating leaves the setting as it was
+g.CenturionReplaySpectate_Start(sh[2])
+g.MOCK.fire('PLAYER_LOGOUT')
+check(g.MOCK.cvars['Sound_ListenerAtCharacter'] == '1', 'logging out spectating saves your own sound setting, not ours')
+g.CenturionReplaySpectate_Stop()
 
 # restart resumes
 g.CenturionReplaySpectate_Start(sh[2])

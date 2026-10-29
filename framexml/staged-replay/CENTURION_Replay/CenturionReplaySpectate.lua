@@ -63,6 +63,37 @@ if ChatFrame_AddMessageEventFilter then
     end)
 end
 
+-- Sound: WoW hears from the character by default (Sound_ListenerAtCharacter),
+-- which stays where you left it while the camera is on someone across the
+-- arena. While spectating it hears from the camera; your setting comes back
+-- after (and on logout, should you log out spectating).
+local LISTENER_CVAR = "Sound_ListenerAtCharacter"
+local savedListener = nil
+
+local function ListenAtCamera()
+    if savedListener ~= nil or not GetCVar or not SetCVar then
+        return
+    end
+    local current = GetCVar(LISTENER_CVAR)
+    if current == nil then
+        return
+    end
+    savedListener = current
+    if current ~= "0" then
+        SetCVar(LISTENER_CVAR, "0")
+    end
+end
+
+local function ListenerBack()
+    if savedListener == nil then
+        return
+    end
+    if SetCVar and GetCVar and GetCVar(LISTENER_CVAR) ~= savedListener then
+        SetCVar(LISTENER_CVAR, savedListener)
+    end
+    savedListener = nil
+end
+
 local function TellServer(text)
     if SendAddonMessage and UnitName then
         local name = UnitName("player")
@@ -195,6 +226,7 @@ function CenturionReplaySpectate_Start(guid)
     active = true
     resumeGuid = nil
     CameraFollow(guid)
+    ListenAtCamera()
     TellServer("SPECTATE " .. guid)
 
     if CREP_SetWatch then
@@ -222,6 +254,7 @@ local function StopSpectating(stopCamera, tellServer)
     if stopCamera and CenturionSpectate then
         CenturionSpectate("off")
     end
+    ListenerBack()
     if tellServer then
         TellServer("SPECTATE OFF")
     end
@@ -331,6 +364,11 @@ end)
 
 local events = CreateFrame("Frame")
 events:RegisterEvent("PLAYER_ENTERING_WORLD")
-events:SetScript("OnEvent", function()
+events:RegisterEvent("PLAYER_LOGOUT")
+events:SetScript("OnEvent", function(self, event)
+    if event == "PLAYER_LOGOUT" then
+        ListenerBack()   -- CVars are saved at logout: never keep the spectate one
+        return
+    end
     resumeGuid = nil
 end)

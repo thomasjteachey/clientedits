@@ -141,6 +141,9 @@ for i = 1, 12 do
 	local b = CreateFrame("CheckButton", "ActionButton" .. i, UIParent)
 	b.action = i
 end
+MOCK.cvars = { Sound_ListenerAtCharacter = "1" }
+function GetCVar(name) return MOCK.cvars[name] end
+function SetCVar(name, value) MOCK.cvars[name] = tostring(value) end
 ChatFrame_AddMessageEventFilter = function(event, fn) MOCK.chatFilters = MOCK.chatFilters or {}; MOCK.chatFilters[event] = fn end
 ERR_LEARN_SPELL_S = "You have learned a new spell: %s."
 ERR_SPELL_UNLEARNED_S = "You have unlearned %s."
