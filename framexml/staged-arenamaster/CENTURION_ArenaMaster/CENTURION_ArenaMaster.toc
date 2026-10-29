@@ -1,0 +1,6 @@
+## Interface: 30300
+## Title: CENTURION Arena Master
+## Notes: The Arena Master's window: every arena queue - rated, skirmish, Four Corners, Buffle Shuffle, All-Star - and the arena replays, in one place.
+## Author: Centurion
+ArenaMaps.lua
+CENTURION_ArenaMaster.lua
