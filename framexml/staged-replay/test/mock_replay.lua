@@ -98,10 +98,24 @@ function GameTooltip:Hide() end
 -- The DLL's follow camera.
 MOCK.spectateLog = {}
 function CenturionSpectate(arg, n)
-	table.insert(MOCK.spectateLog, tostring(arg) .. (n and (" " .. tostring(n)) or ""))
+	if arg ~= "?" and arg ~= "arm" and arg ~= "click" then
+		table.insert(MOCK.spectateLog, tostring(arg) .. (n and (" " .. tostring(n)) or ""))
+	end
 	if arg == "?" then
-		if MOCK.following then return MOCK.following, 1 end
-		return nil
+		local moved = MOCK.moved and 1 or 0
+		MOCK.moved = nil
+		if MOCK.following then return MOCK.following, 1, moved end
+		return nil, 0, moved
+	elseif arg == "arm" then
+		MOCK.armed = true
+		return 1
+	elseif arg == "disarm" then
+		MOCK.armed = false
+		return 0
+	elseif arg == "click" then
+		local c = MOCK.click
+		MOCK.click = nil
+		return c
 	elseif arg == "zoom" then
 		MOCK.zoom = (MOCK.zoom or 0) + n
 		return MOCK.following, 1
@@ -113,3 +127,20 @@ function CenturionSpectate(arg, n)
 		return nil
 	end
 end
+
+-- The default action bars: ActionButton1 holds whatever MOCK.actions[1] says.
+MOCK.actions = {}
+function GetActionInfo(slot)
+	local a = MOCK.actions[slot]
+	if not a then return nil end
+	return "spell", 1, "spell", a
+end
+function Region:LockHighlight() self._lockedHighlight = true end
+function Region:UnlockHighlight() self._lockedHighlight = false end
+for i = 1, 12 do
+	local b = CreateFrame("CheckButton", "ActionButton" .. i, UIParent)
+	b.action = i
+end
+ChatFrame_AddMessageEventFilter = function(event, fn) MOCK.chatFilters = MOCK.chatFilters or {}; MOCK.chatFilters[event] = fn end
+ERR_LEARN_SPELL_S = "You have learned a new spell: %s."
+ERR_SPELL_UNLEARNED_S = "You have unlearned %s."

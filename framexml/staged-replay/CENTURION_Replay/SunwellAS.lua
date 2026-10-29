@@ -872,12 +872,6 @@ local function SetReplayWatchToPlayer(target)
 
     watch = target.guid
 
-    -- Spectating someone: a new POV (a frame click, targeting them in the
-    -- world) moves the camera and the bars to them too.
-    if CenturionReplaySpectate_IsActive and CenturionReplaySpectate_IsActive() then
-        CenturionReplaySpectate_Start(watch)
-    end
-
     if (watch ~= nil and ATPlayers[watch] ~= nil) then
         if REPLAY_UI_SHOW_BIG_FRAMES then
             ATPlayers[watch].fself.main:Show()
@@ -2930,12 +2924,6 @@ local function Execute(target, prefix, ...)
         UpdateTeam(target, tonumber(value))
     elseif (prefix == "SQD") then
         UpdateSquad(target, tonumber(value))
-    elseif (prefix == "BRS" or prefix == "BAR" or prefix == "BMC" or prefix == "BCD" or prefix == "FRM") then
-        -- Action bars, their cooldowns and the stance/form bar: the spectate
-        -- view's (CenturionReplaySpectate.lua).
-        if CenturionReplaySpectate_OnCommand then
-            CenturionReplaySpectate_OnCommand(target, prefix, value)
-        end
     elseif (prefix == "STA") then
         UpdateStatus(target, tonumber(value))
     elseif (prefix == "TRG") then
@@ -3066,6 +3054,17 @@ local function SetBlizzardUIHidden(hidden)
     end
 end
 
+
+-- For CenturionReplaySpectate.lua: spectating shows the normal UI (the
+-- spectated player's buttons are on the default action bars), and puts back
+-- what was there before when it ends.
+function CREP_SetBlizzardUIHidden(hidden)
+    SetBlizzardUIHidden(hidden)
+end
+
+function CREP_IsBlizzardUIHidden()
+    return blizzardUIHiddenByReplay
+end
 
 local function ReplayUIIsProbablyStillInReplayInstance()
     if IsInInstance then
@@ -3242,6 +3241,9 @@ local function EventHandler(self, event, arg1, arg2, arg3, arg4)
                 return
             elseif (arg2 == "REQUESTRESET") then
                 ForceUpdate()
+                return
+            elseif (arg2 == "RESTART" or strsub(arg2, 1, 9) == "SPECTATE ") then
+                -- Our own requests to the server, whispered to ourselves.
                 return
             elseif (specingEnabled == true) then
                 ParseCommands(arg2)

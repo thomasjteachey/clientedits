@@ -126,80 +126,80 @@ p = g.ATPlayers[sh[1]]
 check(p.name == 'Nextlife' and p['class'] == 1, 'NME/CLA after a swap rename and reclass the frame')
 
 # ---------------------------------------------------------------- spectate
-cmd(sh[2], 'BRS', 5)
-cmd(sh[2], 'BAR', '0:0:133,1:0:118,2:0:2139,3:128:42122,4:64:7')
-cmd(sh[2], 'BMC', '4^INV_Misc_QuestionMark^118^Poly')
-cmd(sh[2], 'BAR', '60:0:42955')
-cmd(sh[2], 'BRS', 1)  # a newer set replaces the old
-cmd(sh[2], 'BAR', '0:0:133,1:0:118,2:0:2139,3:128:42122,4:64:7,60:0:42955')
-cmd(sh[2], 'BMC', '4^INV_Misc_QuestionMark^118^Poly')
-cmd(sh[3], 'BRS', 2)
-cmd(sh[3], 'BAR', '0:0:47486,72:0:2457')
+def sent_since(n):
+    return [v for k, v in sorted(g.MOCK.sent.items())][n:]
 
-g.CenturionReplaySpectate_Start(sh[2])
-g.MOCK.update(0.2)
-check(g.MOCK.following == sh[2], 'the camera follows the picked player')
+
+def uiparent_shown():
+    return bool(g.UIParent._shown)
+
+
+check(not uiparent_shown(), 'a replay hides the normal UI (as before)')
+g.MOCK.update(0.1)
+check(g.MOCK.armed, 'in a replay a right-click on a player is armed for spectating')
+
+# right-click a replay player in the world
+mark = len(sent_since(0))
+g.MOCK.click = sh[2]
+g.MOCK.update(0.1)
+check(g.MOCK.following == sh[2], 'a right-click on a player starts the follow camera on them')
 check(g.watch == sh[2], 'spectating makes them the POV')
+told = sent_since(mark)
+check(any(('SPECTATE ' + sh[2]) in s for s in told), 'the server is asked for their bars (%s)' % told)
+check(uiparent_shown(), 'the normal UI shows while spectating (their buttons are on it)')
+g.MOCK.update(0.1)
 check(all(not g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames are hidden while spectating')
-panel = g.CenturionReplaySpectateFrame
-check(panel._shown, 'the spectate view shows')
+check(g.CenturionReplaySpectateStatus._shown and 'move to stop' in (g.CenturionReplaySpectateStatus.text._text or ''),
+      'a line says who is spectated and how to stop')
 
+# the echo of our own whisper does not break the feed parser
+msg('SPECTATE ' + sh[2])
+check(True, 'our own SPECTATE whisper coming back is ignored without an error')
 
-def row_buttons(obj_filter):
-    out = []
-    for o in g.MOCK.objects.values():
-        pass
-    return out
-
-
-# find the main row: a frame with 12 children whose parent is the panel and anchored BOTTOM
-rows = []
-for o in g.MOCK.objects.values():
-    if o._parent is not None and o._parent._id == panel._id and o.buttons is not None and o.row is not None:
-        rows.append(o)
-main = [r for r in rows if r.row.key == 'main'][0]
-bl = [r for r in rows if r.row.key == 'bottomleft'][0]
-icons = [b.icon._file if b.icon._shown else None for b in main.buttons.values()]
-print('    main row icons', icons[:6])
-check(icons[0] and icons[0].endswith('Spell_Fire_FlameBolt'), 'button 1 shows Fireball')
-check(icons[3] and icons[3].endswith('INV_Jewelry_Necklace_37'), 'an item button shows the item icon')
-check(icons[4] and icons[4].endswith('Spell_Nature_Polymorph'), 'a ?-icon macro shows the spell it casts')
-check(main.buttons[5].label._text == 'Poly', 'a macro button carries its name')
-check(bl._shown and bl.buttons[1].icon._file.endswith('Inv_Misc_Food_100'), 'Bottom Left (61-72) shows when it has buttons')
-check(not [r for r in rows if r.row.key == 'bottomright'][0]._shown, 'an empty Bottom Right row stays hidden')
-
-g.MOCK.now = 200
-cmd(sh[2], 'BCD', '0:2139:24000')
-g.MOCK.update(0.2)
-cd = main.buttons[3].cooldown._cd
-check(cd is not None and cd[1] == 200 and cd[2] == 24.0, 'Counterspell shows a 24 s cooldown (%s)' % (list(cd.values()) if cd else None))
-cmd(sh[2], 'BCD', '0:2139:0')
-g.MOCK.update(0.2)
-cd = main.buttons[3].cooldown._cd
-check(cd is not None and cd[2] == 0, 'a cleared cooldown clears the button')
-
+# a cast lights the default button holding that spell
+g.MOCK.actions[1] = 118
+g.MOCK.actions[2] = 133
 cmd(sh[2], 'SPE', '118,1500')
-check(main.buttons[2].flash._alpha == 1 and main.buttons[5].flash._alpha == 1,
-      'casting Polymorph lights its button and the macro that casts it')
+check(g.ActionButton1._lockedHighlight and not g.ActionButton2._lockedHighlight,
+      'their Polymorph lights the Polymorph button on the default bar')
+g.MOCK.now = g.MOCK.now + 1
+g.MOCK.update(0.1)
+check(not g.ActionButton1._lockedHighlight, 'the light goes out')
 
-# switch to the warrior, in Battle Stance
-cmd(sh[3], 'FRM', 17)
-g.CenturionReplaySpectate_Start(sh[3])
-g.MOCK.update(0.2)
-icons = [b.icon._file if b.icon._shown else None for b in main.buttons.values()]
-check(g.MOCK.following == sh[3], 'switching follows the new player')
-check(icons[0] and icons[0].endswith('Ability_Warrior_OffensiveStance'), 'Battle Stance shows the stance page (slots 73-84)')
+# learn/unlearn spam is filtered while spectating
+f = g.MOCK.chatFilters['CHAT_MSG_SYSTEM']
+check(f(None, 'CHAT_MSG_SYSTEM', 'You have learned a new spell: Polymorph.') is True, '"You have learned" lines are hidden')
+check(f(None, 'CHAT_MSG_SYSTEM', 'Welcome to Centurion') is False, 'other system lines are not')
+
+# right-click someone else switches
+mark = len(sent_since(0))
+g.MOCK.click = sh[3]
+g.MOCK.update(0.1)
+check(g.MOCK.following == sh[3] and any(('SPECTATE ' + sh[3]) in s for s in sent_since(mark)), 'a right-click on another player switches to them')
 
 # mouse wheel
+g.MOCK.zoom = 0
 g.CameraZoomIn(1)
 check(g.MOCK.zoom == -2, 'the mouse wheel zooms the follow camera (%s)' % g.MOCK.zoom)
 
-# frames come back
+# W: the DLL ends the follow, the addon notices
+mark = len(sent_since(0))
+g.MOCK.following = None
+g.MOCK.moved = True
+g.MOCK.update(0.1)
+check(not g.CenturionReplaySpectate_IsActive(), 'moving ends spectating')
+check(any('SPECTATE OFF' in s for s in sent_since(mark)), 'the server is told to give the bars back')
+check(not uiparent_shown(), 'the UI goes back the way the replay had it')
+check(all(g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames come back')
+check(not g.CenturionReplaySpectateStatus._shown, 'the status line goes')
+check(f(None, 'CHAT_MSG_SYSTEM', 'You have unlearned Polymorph.') is True, '"unlearned" lines just after are hidden too')
+
+# the arena frame right-click
+frame = g.ATPlayers[sh[4]].fsmall.main
+frame._scripts.OnClick(frame, 'RightButton')
+check(g.MOCK.following == sh[4], "right-clicking a player's arena frame spectates them")
 g.CenturionReplaySpectate_Stop()
-g.MOCK.update(0.2)
-check(g.MOCK.following is None, 'stop gives the camera back')
-check(all(g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames come back after spectating')
-check(not panel._shown, 'the spectate view hides')
+check(g.MOCK.following is None, 'the Spectate button / X stops it')
 
 # restart resumes
 g.CenturionReplaySpectate_Start(sh[2])
@@ -212,7 +212,8 @@ g.MOCK.update(0.6)
 check(g.MOCK.following == sh[2], 'after the restart the same player is followed again')
 g.MOCK.fire('PLAYER_ENTERING_WORLD')
 g.MOCK.update(0.6)
-check(g.MOCK.following is None and not panel._shown, 'leaving the replay ends spectating')
+check(g.MOCK.following is None and not g.CenturionReplaySpectate_IsActive(), 'leaving the replay ends spectating')
+check(g.MOCK.armed is False, 'and right-click is a normal right-click again')
 
 print()
 print('FAILURES: %d' % len(failures))

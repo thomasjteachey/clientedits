@@ -65,12 +65,27 @@ object it free-flies at `+0x0C` and, with a look-at object, aims at it.
 
 ## What spectate.cpp does
 
-- Hooks `0x006DE980`: while a follow is on, returns 1 when `ecx` is the local
-  player (its descriptor guid == `0x004D3790`'s), else runs the original.
+- Hooks `0x006DE980`. While a follow is on it answers "yes" for the local
+  player only to the camera's own questions, told apart by return address:
+  `0x004FA6A2` (world frame: who places the camera), `0x005FB2B3` /
+  `0x005FBEBF` / `0x005FBACC` (mouse look: yaw, pitch, delta). Every other
+  caller gets the client's own answer, so selecting, clicking and keys work.
+- `0x005FBBC0` thiscall(input control, time, start) is where a movement key
+  lands (`MoveForwardStart` 0x005FC200 -> `0x005FA170` sets bit 0x10 -> here;
+  strafe 0x40/0x80, turn 0x100/0x200, back 0x20, autorun 0x1000, both mouse
+  buttons 0x3; the bits are at `[[0x00C24954]+4]`). Its IsCommentator call
+  returns to `0x005FBC07`: with `start` ([ebp+0Ch]) set and a movement bit on,
+  the hook ends the follow and gives the client's answer, so the key moves the
+  player as usual.
+- `0x005277B0` interact(guidLo, guidHi), cdecl: a right-click on a unit in the
+  world (`0x004F78EA`; a left-click goes to `0x005274F0`) and `InteractUnit`.
+  Starts `55 8B EC E8 D8 BF FA FF`. While armed, a right-click on another
+  player is kept for `CenturionSpectate("click")` and not acted on.
 - On a fresh follow, seeds the commentator from the current camera so nothing
   jumps: position = camera position, yaw/pitch = the direction from the camera
   to the unit's aim point, distance = that distance, FOV = the camera's. Then
-  writes the follow guid, speed, collision on, height offset 0.
-- "off" clears the hook's answer; the world frame re-targets the player.
+  writes the follow guid, collision on, height offset 0.
+- "off" (or a movement key) clears the answer; the world frame re-targets the
+  player.
 
 Not verified in game at the time of writing.

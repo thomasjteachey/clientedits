@@ -33,8 +33,11 @@
 //   [0x00B7436C]+0x7E20  the active CGCamera: +0x08 position, +0x14 rotation
 //               matrix (row 0 = forward: yaw = atan2(m1, m0), pitch = asin(-m2),
 //               0x004C5630), +0x40 FOV.
-//   Mouse look (0x005FB2AE / 0x005FBEBA / 0x005FBAC7) and movement input
-//   (0x005FBC02) already route to the commentator in commentator mode.
+//   Mouse look (0x005FB2AE / 0x005FBEBA / 0x005FBAC7) routes to the commentator
+//   in commentator mode; so would movement input (0x005FBC02), which instead
+//   gets the client's own answer and ends the follow (IsCommentatorHook).
+//   0x005277B0 interact(guid): a right-click on a unit in the world (0x004F78EA)
+//   and InteractUnit(); InteractHook takes armed right-clicks on players.
 //
 // The Lua function is registered as a 5-byte jmp in int3 padding inside .text
 // (Lua will not call a function outside it, gluebridge.cpp): 0x00569904, in the
@@ -52,7 +55,7 @@
 static char  g_dir[MAX_PATH] = { 0 };
 static int   g_enabled = 1;          // [Spectate] Enabled
 static float g_defaultDistance = 12.0f;   // [Spectate] Distance
-static float g_zoomSpeed = 15.0f;         // [Spectate] ZoomSpeed, yards a second on W/S
+static float g_zoomSpeed = 15.0f;         // [Spectate] ZoomSpeed (+0x44; movement keys end a follow now)
 static int   g_ready = 0;
 static int   g_faults = 0;
 
@@ -176,22 +179,77 @@ static bool JumpTo(DWORD site, void* target)
     return true;
 }
 
-// ------------------------------------------------------------ the hook
+// ------------------------------------------------------------ the hooks
 //
-// IsCommentator(ecx = player): while a follow is on, "yes" for the local player
-// (its descriptors' guid is the active player's); everyone else, and everyone
-// while no follow is on, gets the client's own answer.
+// IsCommentator(ecx = player) has 18 callers. While a follow is on, only the
+// camera's own questions get "yes" for the local player - the world frame
+// handing the camera to the commentator, and mouse look turning it - so every
+// other control (selecting, clicking, keys, chat) behaves as it always does.
+// They are told apart by return address:
+static const DWORD kRetCameraBlock = 0x004FA6A2;   // world frame: who places the camera
+static const DWORD kRetMouseYaw    = 0x005FB2B3;   // mouse look: yaw goes to the commentator
+static const DWORD kRetMousePitch  = 0x005FBEBF;   // mouse look: pitch
+static const DWORD kRetMouseDelta  = 0x005FBACC;   // mouse look: delta scaling
+// 0x005FBBC0 (thiscall(input control, time, start)) is where a movement key
+// arrives (MoveForwardStart -> 0x005FA170 sets the bit -> here). A key going
+// down while following ends the follow there and then, and the key moves the
+// player as it would have anyway.
+static const DWORD kRetMoveInput   = 0x005FBC07;
+static const DWORD kInputControl   = 0x00C24954;   // CGInputControl*, +0x04 the control bits
+// forward 0x10, back 0x20, strafe 0x40/0x80, turn 0x100/0x200, autorun 0x1000
+static const DWORD kMoveBits       = 0x000013F0;
+static const DWORD kBothMouseBits  = 0x00000003;   // both buttons down = run forward
+
+static volatile LONG g_stoppedByMove = 0;
+
+static void __stdcall StopFollowFromHook();
+
 __declspec(naked) static void IsCommentatorHook()
 {
     __asm {
         cmp  dword ptr [g_on], 0
         je   original
+
+        mov  eax, dword ptr [esp]          // where the question comes from
+        cmp  eax, kRetMoveInput
+        je   movement
+        cmp  eax, kRetCameraBlock
+        je   camera
+        cmp  eax, kRetMouseYaw
+        je   camera
+        cmp  eax, kRetMousePitch
+        je   camera
+        cmp  eax, kRetMouseDelta
+        je   camera
+        jmp  original
+
+    movement:
+        // [ebp+0Ch] = 0x005FBBC0's "start" argument (its frame); the bits are
+        // the input control's, already updated by the key.
+        cmp  dword ptr [ebp + 0Ch], 0
+        je   original
+        mov  eax, dword ptr ds:[0x00C24954]
+        test eax, eax
+        je   original
+        mov  eax, dword ptr [eax + 4]
+        test eax, kMoveBits
+        jne  stopFollow
+        and  eax, kBothMouseBits
+        cmp  eax, kBothMouseBits
+        jne  original
+    stopFollow:
+        push ecx
+        call StopFollowFromHook            // stdcall, no arguments; keeps ecx above
+        pop  ecx
+        jmp  original
+
+    camera:
         push ecx
         mov  eax, kGetActiveGuid
-        call eax                        // edx:eax = active player guid
+        call eax                           // edx:eax = active player guid
         pop  ecx
         push esi
-        mov  esi, dword ptr [ecx + 8]   // descriptors: OBJECT_FIELD_GUID first
+        mov  esi, dword ptr [ecx + 8]      // descriptors: OBJECT_FIELD_GUID first
         test esi, esi
         je   notActive
         cmp  eax, dword ptr [esi]
@@ -206,6 +264,52 @@ __declspec(naked) static void IsCommentatorHook()
     original:
         mov  eax, dword ptr ds:[0x00BD088C]   // the 5 bytes the jmp replaced
         jmp  dword ptr [g_isCommentatorResume]
+    }
+}
+
+// 0x005277B0 CGGameUI's interact(guidLo, guidHi), cdecl: a right-click on a
+// unit in the world (0x004F78EA; a left-click goes to 0x005274F0, target) and
+// InteractUnit(). While the spectate view is armed (CenturionSpectate("arm"),
+// in a replay), a right-click on another player is taken for "spectate them":
+// kept for CenturionSpectate("click") and not acted on - no attack swing at a
+// replay actor, no trade window.
+static const DWORD kInteract = 0x005277B0;
+static const BYTE  kInteractSig[] = { 0x55, 0x8B, 0xEC, 0xE8, 0xD8, 0xBF, 0xFA, 0xFF };
+static DWORD       g_interactResume = 0x005277B8;
+static volatile LONG g_armed = 0;
+static DWORD g_clickLo = 0, g_clickHi = 0;
+static volatile LONG g_clickSeq = 0, g_clickRead = 0;
+
+static int __cdecl TakeRightClick(DWORD lo, DWORD hi)
+{
+    if (!g_armed || !lo || hi)           // players only: high guid 0
+        return 0;
+    unsigned __int64 const active = ((unsigned __int64 (__cdecl*)())kGetActiveGuid)();
+    if (DWORD(active) == lo && DWORD(active >> 32) == hi)
+        return 0;
+    g_clickLo = lo;
+    g_clickHi = hi;
+    InterlockedIncrement(&g_clickSeq);
+    return 1;
+}
+
+__declspec(naked) static void InteractHook()
+{
+    __asm {
+        push dword ptr [esp + 8]           // guid hi
+        push dword ptr [esp + 8]           // guid lo (shifted by the push)
+        call TakeRightClick
+        add  esp, 8
+        test eax, eax
+        jne  taken
+        push ebp                           // the 8 bytes the jmp replaced:
+        mov  ebp, esp                      //   push ebp / mov ebp, esp /
+        mov  eax, kGetActiveGuid           //   call 0x004D3790
+        call eax
+        jmp  dword ptr [g_interactResume]
+    taken:
+        mov  eax, 1
+        ret
     }
 }
 
@@ -303,6 +407,16 @@ static void StopFollow()
     g_followLo = g_followHi = 0;
 }
 
+// A movement key while following (IsCommentatorHook): the follow ends and the
+// addon hears why on its next CenturionSpectate("?").
+static void __stdcall StopFollowFromHook()
+{
+    if (!g_on)
+        return;
+    StopFollow();
+    InterlockedExchange(&g_stoppedByMove, 1);
+}
+
 static bool ParseGuid(const char* text, DWORD& lo, DWORD& hi)
 {
     if (!text || text[0] != '0' || (text[1] != 'x' && text[1] != 'X') || strlen(text) != 18)
@@ -323,19 +437,30 @@ static bool ParseGuid(const char* text, DWORD& lo, DWORD& hi)
     return true;
 }
 
+static void PushGuid(void* L, DWORD lo, DWORD hi)
+{
+    char guid[24];
+    _snprintf_s(guid, sizeof(guid), _TRUNCATE, "0x%08lX%08lX", hi, lo);   // UnitGUID()'s form
+    pLuaPushString(L, guid);
+}
+
+// guid, present, stoppedByMove: what is followed (nil when not), whether that
+// unit is here now, and 1 once after a movement key ended the follow.
 static int PushFollowed(void* L)
 {
+    double const moved = InterlockedExchange(&g_stoppedByMove, 0) ? 1.0 : 0.0;
     if (!g_on)
     {
         pLuaPushNil(L);
-        return 1;
+        pLuaPushNumber(L, 0.0);
+        pLuaPushNumber(L, moved);
+        return 3;
     }
-    char guid[24];
-    _snprintf_s(guid, sizeof(guid), _TRUNCATE, "0x%08lX%08lX", g_followHi, g_followLo);   // UnitGUID()'s form
-    pLuaPushString(L, guid);
+    PushGuid(L, g_followLo, g_followHi);
     float point[3];
     pLuaPushNumber(L, FollowPoint(g_followLo, g_followHi, point) ? 1.0 : 0.0);
-    return 2;
+    pLuaPushNumber(L, moved);
+    return 3;
 }
 
 static int Spectate(void* L)
@@ -344,6 +469,34 @@ static int Spectate(void* L)
 
     if (arg && arg[0] == '?' && !arg[1])
         return PushFollowed(L);
+
+    // Right-click to spectate: "arm" while the addon can spectate (in a
+    // replay), "disarm" after; "click" hands over the player last right-clicked
+    // since the previous "click", once, or nil.
+    if (arg && !_stricmp(arg, "arm"))
+    {
+        InterlockedExchange(&g_armed, g_ready & 2 ? 1 : 0);
+        pLuaPushNumber(L, g_armed ? 1.0 : 0.0);
+        return 1;
+    }
+    if (arg && !_stricmp(arg, "disarm"))
+    {
+        InterlockedExchange(&g_armed, 0);
+        pLuaPushNumber(L, 0.0);
+        return 1;
+    }
+    if (arg && !_stricmp(arg, "click"))
+    {
+        LONG const seq = g_clickSeq;
+        if (seq == g_clickRead)
+        {
+            pLuaPushNil(L);
+            return 1;
+        }
+        g_clickRead = seq;
+        PushGuid(L, g_clickLo, g_clickHi);
+        return 1;
+    }
 
     if (arg && !_stricmp(arg, "zoom"))
     {
@@ -389,6 +542,8 @@ void Spectate_WorldLuaReady()
         return;
     if (g_on)
         StopFollow();
+    InterlockedExchange(&g_armed, 0);
+    InterlockedExchange(&g_stoppedByMove, 0);
     pRegisterFunction("CenturionSpectate", (void*)kLuaThunk);
 }
 
@@ -425,5 +580,11 @@ void Spectate_Install()
         return;
     }
     g_ready = 1;
-    Log("installed (distance %.0f yd, W/S %.0f yd/s)", g_defaultDistance, g_zoomSpeed);
+    // Right-click to spectate is its own piece: without it the camera still
+    // follows whoever the addon names.
+    if (SigOk(kInteract, kInteractSig, sizeof(kInteractSig), "CGGameUI interact") &&
+        JumpTo(kInteract, (void*)&InteractHook))
+        g_ready |= 2;
+    Log("installed (distance %.0f yd, zoom %.0f yd/s, right-click %s)", g_defaultDistance, g_zoomSpeed,
+        (g_ready & 2) ? "on" : "OFF");
 }

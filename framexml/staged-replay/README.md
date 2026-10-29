@@ -14,15 +14,18 @@ What changed, with the server half in `src/server/scripts/Custom/BGReplay.cpp`
   frames out by squad in the screen corner of its map corner, in the squad's
   colour, scaled to fit 5v5v5v5.
 - Rage / runic power show /10 like the bars.
-- **Spectate** (`CenturionReplaySpectate.lua`): right-click a frame or press
-  Spectate. The camera follows that player without turning with them (needs
-  the client-tweaks DLL with `CenturionSpectate`, clientedits
-  `src/spectate.cpp`); their action bars (`BRS`/`BAR`/`BMC`), cooldowns
-  (`BCD`), stance/form page (`FRM`) and button presses (`SPE`) show; the
-  arena frames hide; a strip at the top switches player; X stops.
+- **Spectate** (`CenturionReplaySpectate.lua`): right-click a player in the
+  replay (in the world, or their arena frame), or press Spectate. The camera
+  follows them without turning with them (client-tweaks DLL `CenturionSpectate`,
+  clientedits `src/spectate.cpp`; only the camera is taken over, every other
+  control works); the arena frames hide and the normal UI shows; the server puts
+  THEIR buttons and cooldowns on YOUR default action bars (ASSUN `SPECTATE
+  <guid>`, the way an All-Star life swaps bars) and lights the button they press.
+  Right-click someone else to switch; a movement key (W/A/S/D, strafe, autorun)
+  ends it and you are back in your own body with your own bars (`SPECTATE OFF`).
 
 Test: `test/run_replay.py` + `test/mock_replay.lua` (on the bounty board's
-harness, `bountyboard/harness`) - 30 checks, all passing, 2026-10-29.
+harness, `bountyboard/harness`) - 39 checks, all passing, 2026-10-29.
 
 Publish: copy `CENTURION_Replay/` up next to `addons_replace_replay.sh` on the
 game box and run it there (backs up, replaces three files, bumps
