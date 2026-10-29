@@ -923,6 +923,26 @@ local function MovePick(index, by)
 	Draw()
 end
 
+-- A life dragged onto another: it takes that place and the ones between
+-- shift over by one.
+local function DropPick(from, to)
+	local lu = state.lineup
+	local last = lu and lu.lives - 1 or 0
+	if not lu or not lu.editable or from == to or from < 1 or to < 1 or from > last or to > last then
+		return
+	end
+	local list = {}
+	for i = 1, last do
+		list[i] = lu.picks[i] or "-"
+	end
+	local moved = table.remove(list, from)
+	table.insert(list, to, moved)
+	lu.picks = list
+	PlaySound("igMainMenuOptionCheckBoxOn")
+	SendPicks()
+	Draw()
+end
+
 local function InitPickMenu(self, level)
 	local lu = state.lineup
 	if not lu or not menuSlot then
@@ -998,11 +1018,54 @@ local function MakeArrow(dir)
 	return b
 end
 
+-- The portrait that follows the cursor while a life is dragged.
+local dragFrom
+local dragIcon = CreateFrame("Frame", nil, UIParent)
+dragIcon:SetFrameStrata("TOOLTIP")
+dragIcon:SetWidth(32)
+dragIcon:SetHeight(32)
+dragIcon.tex = dragIcon:CreateTexture(nil, "ARTWORK")
+dragIcon.tex:SetAllPoints(dragIcon)
+dragIcon:Hide()
+dragIcon:SetScript("OnUpdate", function(self)
+	local x, y = GetCursorPosition()
+	local scale = UIParent:GetEffectiveScale()
+	self:ClearAllPoints()
+	self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / scale, y / scale)
+end)
+
 for i = 1, MAX_SLOTS do
 	local b = CreateFrame("Button", nil, poster)
 	b:SetWidth(42)
 	b:SetHeight(42)
 	b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	b:RegisterForDrag("LeftButton")
+	b:SetScript("OnDragStart", function(self)
+		local lu = state.lineup
+		if i == 1 or not lu or not lu.editable then
+			return
+		end
+		CloseDropDownMenus()
+		GameTooltip:Hide()
+		dragFrom = i
+		dragIcon.tex:SetTexture(self.circle:GetTexture())
+		dragIcon.tex:SetTexCoord(self.circle:GetTexCoord())
+		dragIcon:Show()
+	end)
+	b:SetScript("OnDragStop", function()
+		local from = dragFrom
+		dragFrom = nil
+		dragIcon:Hide()
+		if not from then
+			return
+		end
+		for j, other in ipairs(slots) do
+			if j > 1 and other:IsShown() and MouseIsOver(other) then
+				DropPick(from - 1, j - 1)
+				return
+			end
+		end
+	end)
 	b.circle = b:CreateTexture(nil, "ARTWORK")
 	b.circle:SetPoint("CENTER", b, "CENTER")
 	b.ring = b:CreateTexture(nil, "OVERLAY")
@@ -1048,7 +1111,7 @@ for i = 1, MAX_SLOTS do
 		else
 			GameTooltip:SetText("Life " .. i, 1, 1, 1)
 			GameTooltip:AddLine("Click to choose who plays it. Right-click for Random.", nil, nil, nil, true)
-			GameTooltip:AddLine("The arrows move it a place.", nil, nil, nil, true)
+			GameTooltip:AddLine("Drag it onto another life to change the order.", nil, nil, nil, true)
 		end
 		GameTooltip:Show()
 	end)
@@ -1127,14 +1190,9 @@ local function SetSlots(y)
 
 			b.prev:ClearAllPoints()
 			b.next:ClearAllPoints()
-			if beside then
-				b.prev:SetPoint("RIGHT", b, "LEFT", 0, 0)
-				b.next:SetPoint("LEFT", b, "RIGHT", 0, 0)
-			else
-				b.prev:SetPoint("TOPRIGHT", poster, "TOPLEFT", cx, -(y + ring + 26))
-				b.next:SetPoint("TOPLEFT", poster, "TOPLEFT", cx, -(y + ring + 26))
-			end
-			local movable = lu.editable and i > 1
+			b.prev:SetPoint("RIGHT", b, "LEFT", 0, 0)
+			b.next:SetPoint("LEFT", b, "RIGHT", 0, 0)
+			local movable = lu.editable and i > 1 and beside
 			if movable then
 				b.prev:Show()
 				b.next:Show()
@@ -1691,7 +1749,7 @@ PAGES.A = {
 		local word = LIVES_WORD[lives] or (lives .. " lives")
 		local headingSub
 		if lu and lu.editable then
-			headingSub = "Click a life to choose who plays it. The arrows change the order."
+			headingSub = "Click a life to choose who plays it. Drag lives to change the order."
 		elseif lu and lu.shuffled then
 			headingSub = "shuffled every match"
 		end
