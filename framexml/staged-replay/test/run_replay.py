@@ -177,10 +177,10 @@ g.MOCK.click = sh[3]
 g.MOCK.update(0.1)
 check(g.MOCK.following == sh[3] and any(('SPECTATE ' + sh[3]) in s for s in sent_since(mark)), 'a right-click on another player switches to them')
 
-# mouse wheel
-g.MOCK.zoom = 0
+# the mouse wheel is the normal camera's: the addon does not touch it
+log_before = len(list(g.MOCK.spectateLog.values()))
 g.CameraZoomIn(1)
-check(g.MOCK.zoom == -2, 'the mouse wheel zooms the follow camera (%s)' % g.MOCK.zoom)
+check(len(list(g.MOCK.spectateLog.values())) == log_before and g.MOCK.following == sh[3], 'the mouse wheel leaves spectating alone')
 
 # W: the DLL ends the follow, the addon notices
 mark = len(sent_since(0))

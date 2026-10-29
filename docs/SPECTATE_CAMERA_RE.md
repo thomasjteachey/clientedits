@@ -63,29 +63,37 @@ object it free-flies at `+0x0C` and, with a look-at object, aims at it.
 `+0x14` matrix, `+0x38` near clip, `+0x40` FOV; the active camera is
 `[[0x00B7436C] + 0x7E20]` (`0x004F5960`).
 
-## What spectate.cpp does
+## What spectate.cpp does (2026-10-29, second version)
 
-- Hooks `0x006DE980`. While a follow is on it answers "yes" for the local
-  player only to the camera's own questions, told apart by return address:
-  `0x004FA6A2` (world frame: who places the camera), `0x005FB2B3` /
-  `0x005FBEBF` / `0x005FBACC` (mouse look: yaw, pitch, delta). Every other
-  caller gets the client's own answer, so selecting, clicking and keys work.
+The commentator camera (above) follows without spinning but takes the camera
+controls over: the owner could not zoom or drag. spectate.cpp now uses the
+NORMAL camera:
+
+- The normal camera's world yaw is `relative yaw + camera+0x12C + target facing`
+  (0x00604580..: the facing is cached at camera+0x1D4) - **unless camera+0xAC
+  > 0**. That is a lock count: `0x006019B0` (thiscall(camera)) increments it and
+  on 0 -> 1 adds the target's facing into the stored yaw so nothing jumps
+  (0x005FE5F0); `0x00601A70` decrements and on 1 -> 0 takes it back out. Mouse
+  look uses it. Pitch has the same at +0xB0 (not used).
+- Start: `CGWorldFrame::SetCameraTarget` (0x004F6F50, thiscall(worldFrame,
+  object, 0), the call farsight makes at 0x006E2A01) on the unit, then one yaw
+  lock. Zoom, left/right drag, collision are the camera's own.
+- Every frame (IsCommentator hooked only as a call site: return address
+  0x004FA6A2 in the world frame's camera block; the answer is always the
+  client's): the camera is put back on the unit if it lost it (a replay restart
+  re-creates the unit) and the lock re-taken if a view change (0x00606970
+  zeroes +0xAC) dropped it.
+- Stop: the lock released while the camera is still on the unit, then
+  SetCameraTarget(active player).
 - `0x005FBBC0` thiscall(input control, time, start) is where a movement key
-  lands (`MoveForwardStart` 0x005FC200 -> `0x005FA170` sets bit 0x10 -> here;
+  lands (MoveForwardStart 0x005FC200 -> 0x005FA170 sets bit 0x10 -> here;
   strafe 0x40/0x80, turn 0x100/0x200, back 0x20, autorun 0x1000, both mouse
   buttons 0x3; the bits are at `[[0x00C24954]+4]`). Its IsCommentator call
-  returns to `0x005FBC07`: with `start` ([ebp+0Ch]) set and a movement bit on,
-  the hook ends the follow and gives the client's answer, so the key moves the
-  player as usual.
+  returns to 0x005FBC07: with `start` ([ebp+0Ch]) set and a movement bit on, the
+  follow ends and the camera goes back to the player on the next frame.
 - `0x005277B0` interact(guidLo, guidHi), cdecl: a right-click on a unit in the
-  world (`0x004F78EA`; a left-click goes to `0x005274F0`) and `InteractUnit`.
-  Starts `55 8B EC E8 D8 BF FA FF`. While armed, a right-click on another
-  player is kept for `CenturionSpectate("click")` and not acted on.
-- On a fresh follow, seeds the commentator from the current camera so nothing
-  jumps: position = camera position, yaw/pitch = the direction from the camera
-  to the unit's aim point, distance = that distance, FOV = the camera's. Then
-  writes the follow guid, collision on, height offset 0.
-- "off" (or a movement key) clears the answer; the world frame re-targets the
-  player.
+  world (0x004F78EA; a left-click goes to 0x005274F0) and InteractUnit. Starts
+  `55 8B EC E8 D8 BF FA FF`. While armed, a right-click on another player is
+  kept for CenturionSpectate("click") and not acted on.
 
 Not verified in game at the time of writing.

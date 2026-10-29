@@ -10,10 +10,11 @@
 -- with your own bars.
 --
 -- The pieces:
---   * camera: CenturionSpectate() in the client-tweaks dinput8.dll - the
---     client's commentator camera, only for the camera itself; every other
---     control keeps working. The DLL also takes the right-click ("arm") and
---     ends the follow on a movement key.
+--   * camera: CenturionSpectate() in the client-tweaks dinput8.dll puts the
+--     normal camera on them, with the camera's own yaw lock held so it does not
+--     swing round when they turn; zoom and mouse drag are the normal camera's.
+--     The DLL also takes the right-click ("arm") and ends the follow on a
+--     movement key.
 --   * bars: the server (BGReplay.cpp) on "ASSUN SPECTATE <guid>" teaches the
 --     client their spells and sends their bars and cooldowns as yours, the way
 --     an All-Star life swaps bars; "SPECTATE OFF" puts yours back. Your saved
@@ -168,21 +169,6 @@ local function CameraFollow(guid)
         DEFAULT_CHAT_FRAME:AddMessage("|cffffcc00Spectate:|r this client has no follow camera yet - update it with the launcher. Their bars still show.")
     end
     return false
-end
-
--- The mouse wheel zooms the follow camera.
-local function OnZoom(sign, amount)
-    if active and CenturionSpectate then
-        CenturionSpectate("zoom", sign * 2 * (tonumber(amount) or 1))
-    end
-end
-if hooksecurefunc then
-    if CameraZoomIn then
-        hooksecurefunc("CameraZoomIn", function(amount) OnZoom(-1, amount) end)
-    end
-    if CameraZoomOut then
-        hooksecurefunc("CameraZoomOut", function(amount) OnZoom(1, amount) end)
-    end
 end
 
 ------------------------------------------------------------------------------
