@@ -468,6 +468,18 @@ check(enabled(button_labelled('Join as Group')), 'Warsong Gulch still takes the 
 am.Hide(am)
 mock.party = lua.table_from([])
 
+# Violet Hold as the server sends it: 40 on the template (the waves' limit), a
+# party of 10 (MaxGroupSize). The window shows the party.
+deliver(['BGQUEUE:MASTER:%s:105' % MASTER_GUID, 'BG:BEGIN',
+         'BG:B:105:1608:40:10:60:0:10:The Violet Hold', 'BG:END:1'])
+g.ShowUIPanel(g.BattlefieldFrame)
+mock.update(0.02)
+texts = visible_texts()
+check('A party of up to 10  -  levels 10-60' in texts, 'Violet Hold: a party of up to 10, not 40 a side')
+check('Up to 10 players' in texts, 'and its team size says so')
+check(row_button(1) is not None and row_button(1).count._text == '10', 'and the list shows 10')
+am.Hide(am)
+
 open_master()
 check(am._shown and 'Arena Master' in visible_texts(), 'the Arena Master still opens after the Battlemaster')
 check(visible(g.CenturionArenaMasterType) and not visible(g.CenturionArenaMasterSide1),

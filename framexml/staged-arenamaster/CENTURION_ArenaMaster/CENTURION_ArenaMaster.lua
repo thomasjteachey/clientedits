@@ -124,7 +124,10 @@ local BG_INFO = {
 	          text = "A large deathmatch in the halls of the Obsidian Colosseum." },
 	[104] = { icon = "INV_BannerPVP_01", goal = "Deathmatch",
 	          text = "A deathmatch across the sands of Tanaris." },
-	[105] = { icon = "Achievement_Zone_CrystalSong_01", goal = "Survival",
+	-- party: one party of players against waves of clones. Its size is the
+	-- party cap (10); the template's 40 is the waves' limit, the win (owner:
+	-- "max size in violet hold is 10, no?").
+	[105] = { icon = "Achievement_Zone_CrystalSong_01", goal = "Survival", party = true,
 	          text = "Hold the Violet Hold together, wave after wave." },
 	[106] = { icon = "INV_BannerPVP_03", goal = "Hold the orbs",
 	          text = "Seize the temple's orbs and keep them. The longer you hold one, and the nearer the centre, the more it scores." },
@@ -1727,7 +1730,9 @@ local function DrawBattlemaster()
 			if not FitText(b.label, row.name, 104, big, small) then
 				FitText(b.label, (string.gsub(row.name, "^The ", "")), 104, big, small)
 			end
-			b.count:SetText(row.perTeam > 0 and tostring(row.perTeam) or "")
+			local party = BG_INFO[row.id] and BG_INFO[row.id].party
+			local size = party and (row.groupCap or row.perTeam) or row.perTeam
+			b.count:SetText(size > 0 and tostring(size) or "")
 			if picked then b.sel:Show() else b.sel:Hide() end
 			b:Show()
 		else
@@ -1766,15 +1771,19 @@ local function DrawBattlemaster()
 	local minLevel = math.min(bg.minLevel, maxLevel)
 	local single = minLevel == maxLevel
 	local levels = single and tostring(minLevel) or (minLevel .. "-" .. maxLevel)
+	local levelText = (single and "level " or "levels ") .. levels
+	-- One party against waves: the party is the side.
+	local partySize = info.party and (bg.groupCap or bg.perTeam)
 	DrawPoster({
 		banner = art, cy = 0.5,
 		icon = BG_ICONS .. (info.icon or "INV_BannerPVP_01"),
 		title = bg.name,
 		small = string.len(bg.name) > 22,
-		sub = string.format("%d vs %d  -  %s %s", bg.perTeam, bg.perTeam, single and "level" or "levels", levels),
+		sub = partySize and string.format("A party of up to %d  -  %s", partySize, levelText)
+			or string.format("%d vs %d  -  %s", bg.perTeam, bg.perTeam, levelText),
 		body = info.text or "A battleground: two sides, one objective.",
-		facts = { { "Team size", bg.perTeam .. " players" }, { "Levels", levels },
-			{ "Objective", info.goal or "Win" } },
+		facts = { { "Team size", partySize and ("Up to " .. partySize .. " players") or (bg.perTeam .. " players") },
+			{ "Levels", levels }, { "Objective", info.goal or "Win" } },
 	})
 	if bg.sides then
 		SetHeading(308, "Side")

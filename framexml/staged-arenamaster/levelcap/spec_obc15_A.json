@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "obsidian-15v15",
+  "stage": "/tmp/centmode/obc15/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "DBFilesClient\\BattlemasterList.dbc": "8221f40296dd2f294c683d7678e449f0"
+  }
+}
