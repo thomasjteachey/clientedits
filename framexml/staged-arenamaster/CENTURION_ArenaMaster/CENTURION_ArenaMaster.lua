@@ -38,8 +38,9 @@ local CLASS_TOKEN = {
 }
 
 local MODES = {
-	{ key = "R", name = "Rated",          icon = "Interface\\Icons\\Achievement_Arena_3v3_7" },
-	{ key = "S", name = "Skirmish",       icon = "Interface\\Icons\\Achievement_Arena_2v2_1" },
+	-- Standard is skirmish and rated in one (owner 2026-10-29: "change the
+	-- dropdowns to be standard, multi-team, buffle shuffle, all-star").
+	{ key = "S", name = "Standard",       icon = "Interface\\Icons\\Achievement_Arena_2v2_1" },
 	{ key = "M", name = "Multi-team",     icon = "Interface\\Icons\\Achievement_Arena_5v5_7" },
 	{ key = "B", name = "Buffle Shuffle", icon = "Interface\\Icons\\INV_Misc_Dice_01" },
 	{ key = "A", name = "All-Star",       icon = "Interface\\Icons\\Achievement_FeatsOfStrength_Gladiator_07" },
@@ -343,22 +344,16 @@ local typeLabel = am:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 typeLabel:SetPoint("LEFT", am, "TOPLEFT", 24, -30)
 typeLabel:SetText("Arena type")
 
-local DD_WIDTH = 136
+-- Text only, and narrow to fit it (owner: "get rid of the icons in the
+-- dropdown ... and fit the dropdown without them (make it thinner)").
+local DD_WIDTH = 112
 local dd = CreateFrame("Frame", "CenturionArenaMasterType", am, "UIDropDownMenuTemplate")
 dd:SetPoint("TOPLEFT", am, "TOPLEFT", 4, -40)
 UIDropDownMenu_SetWidth(dd, DD_WIDTH)
 
--- The stock menu has no icon of its own; the mode's goes where the
--- character-creation menus keep theirs, left of the text.
-local ddIcon = dd:CreateTexture(nil, "OVERLAY")
-ddIcon:SetWidth(15)
-ddIcon:SetHeight(15)
-ddIcon:SetPoint("TOPLEFT", dd, "TOPLEFT", 26, -6)
-ddIcon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-
 local ddText = _G["CenturionArenaMasterTypeText"]
 ddText:ClearAllPoints()
-ddText:SetPoint("LEFT", dd, "TOPLEFT", 46, -14)
+ddText:SetPoint("LEFT", dd, "TOPLEFT", 28, -14)
 ddText:SetFontObject(GameFontHighlight)
 ddText:SetJustifyH("LEFT")
 
@@ -393,8 +388,6 @@ local function InitTypeMenu(self, level)
 		info = UIDropDownMenu_CreateInfo()
 		info.text = m.name
 		info.value = m.key
-		info.icon = m.icon
-		info.tCoordLeft, info.tCoordRight, info.tCoordTop, info.tCoordBottom = 0.07, 0.93, 0.07, 0.93
 		info.checked = state.mode == m.key
 		if not ModeAvailable(m.key) then
 			info.disabled = 1
@@ -1146,24 +1139,6 @@ local function TeamOfSize(size)
 	return nil
 end
 
-local rosterAsked = {}
-
-local function Roster(team)
-	if not rosterAsked[team.index] then
-		rosterAsked[team.index] = true
-		ArenaTeamRoster(team.index)
-	end
-	local people = {}
-	local n = GetNumArenaTeamMembers(team.index, 1) or 0
-	for k = 1, math.min(n, MAX_PORTRAITS) do
-		local name, _, _, class, _, _, _, _, _, rating = GetArenaTeamRosterInfo(team.index, k)
-		if name then
-			table.insert(people, { token = CLASS_BY_NAME[class or ""], name = name,
-				sub = rating and tostring(rating) or "" })
-		end
-	end
-	return people
-end
 
 ------------------------------------------------------------------
 -- the pages
@@ -1185,62 +1160,33 @@ local function Join(mode, size, group)
 	am:Hide()
 end
 
+-- Standard: a skirmish, or - with an arena team of the size - rated, from the
+-- same page (owner 2026-10-29: "include the 'join rated' button you have for 4
+-- corners arena on the standard page").
 PAGES.S = {
 	rows = function()
 		local rows = {}
 		for size = 2, 5 do
-			table.insert(rows, { label = size .. "v" .. size .. " Skirmish", size = size })
+			local team = TeamOfSize(size)
+			table.insert(rows, { label = size .. "v" .. size .. " Arena", size = size, count = team and team.rating or nil })
 		end
 		return rows
 	end,
 	draw = function(row)
 		local size = row.size
+		local team = TeamOfSize(size)
 		return {
 			banner = SCREENS .. "LoadScreenNagrandArenaBattlegrounds", cy = 0.42,
-			icon = MODE.S.icon,
+			icon = TEAM_ICON[size] or MODE.S.icon,
 			title = row.label,
-			sub = "Practice match  -  no rating at stake",
-			body = string.format("Fight for honor, not rating. Queue alone or bring up to %s; the queue fills any empty places on your team. A loss costs you nothing.",
-				size == 2 and "a friend" or (size - 1) .. " friends"),
-			facts = { { "Team", size .. " players" }, { "Arena", "Random" }, { "Reward", "Honor" } },
+			sub = team and string.format("Skirmish, or rated with %s (%d)", team.name, team.rating)
+				or "Skirmish for honor, or rated with an arena team",
+			body = string.format("Queue alone or bring up to %s for a skirmish; the queue fills any empty places on your team. Bring your %dv%d arena team to fight for rating.",
+				size == 2 and "a friend" or (size - 1) .. " friends", size, size),
+			facts = { { "Team", size .. " players" }, { "Arena", "Random" },
+				{ "Rated", team and team.name or "No team" } },
 			pool = true,
-			join = { mode = "S", size = size, limit = size },
-		}
-	end,
-}
-
-PAGES.R = {
-	rows = function()
-		local rows = {}
-		for _, t in ipairs(ArenaTeams()) do
-			table.insert(rows, { label = t.size .. "v" .. t.size .. " Team", count = t.rating, team = t, size = t.size })
-		end
-		return rows
-	end,
-	draw = function(row)
-		if not row then
-			return {
-				banner = SCREENS .. "LoadScreenBladesEdgeArena", cy = 0.45,
-				icon = MODE.R.icon,
-				title = "Rated Arena",
-				sub = "Arena teams only",
-				message = "You are not on an arena team.\n\nRated arenas are fought by arena teams, and every team you join is listed here with its rating and roster.",
-				join = nil,
-			}
-		end
-		local t = row.team
-		local people = Roster(t)
-		return {
-			banner = SCREENS .. "LoadScreenBladesEdgeArena", cy = 0.45,
-			icon = TEAM_ICON[t.size] or MODE.R.icon,
-			title = t.name,
-			small = true,
-			sub = string.format("%dv%d arena team  -  rating %d  -  %d played this week", t.size, t.size, t.rating, t.played),
-			body = string.format("Your team's rating rises and falls with every match. Queue with your team: any %s of its members can fight.",
-				t.size == 2 and "two" or (t.size == 3 and "three" or (t.size == 4 and "four" or "five"))),
-			heading = "Roster",
-			people = people,
-			join = { mode = "R", size = t.size, limit = t.size, rated = true },
+			join = { mode = "S", size = size, limit = size, ratedMode = "R", team = team },
 		}
 	end,
 }
@@ -1409,7 +1355,8 @@ local function DrawFoot(p)
 	if j.ratedMode then
 		local ratedOk = canGroup and j.team ~= nil
 		table.insert(buttons, { "Join Rated", 110, ratedOk, function() Join(j.ratedMode, j.size, true) end })
-		if not j.team then
+		-- Alone, "not in a group" says it; a group without the team hears why.
+		if canGroup and not j.team then
 			why = string.format("You need a %dv%d arena team to play it rated.", j.size, j.size)
 		end
 	end
@@ -1614,7 +1561,6 @@ end
 
 function Draw()
 	local mode = MODE[state.mode]
-	ddIcon:SetTexture(mode.icon)
 	UIDropDownMenu_SetText(dd, mode.name)
 
 	local replays = state.mode == "P"
@@ -1649,7 +1595,7 @@ function Draw()
 	end
 
 	ShowAll(replayLeft, replays)
-	if replays or state.mode == "R" then
+	if replays then
 		bots:Hide()
 	else
 		bots:Show()

@@ -147,7 +147,7 @@ check('ARENABOTS' in sent_bodies(), 'it asks for the Arena bot matches box')
 deliver(['ARENABOTS:1'])
 check(g.CenturionArenaMasterBots._checked, 'which shows checked when the server says so')
 texts = visible_texts()
-check('3v3 Skirmish' in texts, 'Skirmish 3v3 by default, on the plate and the sheet')
+check('3v3 Arena' in texts, 'Standard 3v3 by default, on the plate and the sheet')
 check('You are not in a group.' in texts, 'alone: says so')
 gb = button_labelled('Join as Group')
 check(visible(gb) and not enabled(gb), 'Join as Group greyed alone')
@@ -172,7 +172,7 @@ g.ShowUIPanel(g.ArenaFrame)
 check(not am._shown, 'the next arena window is the stock one again without a new MASTER')
 g.HideUIPanel(g.ArenaFrame)
 
-# 2. Rated, with a team and a group, and the menu open ----------------------------------
+# 2. Standard with a team and a group: Join Rated, and the menu open ---------------------
 mock.teams[1] = lua.table_from({'name': 'Two Dots', 'size': 2, 'rating': 1820, 'played': 9, 'wins': 6,
                                 'roster': lua.table_from([lua.table_from(['Tijuana', 'Rogue', 1840]),
                                                           lua.table_from(['Claude', 'Shaman', 1801])])})
@@ -184,33 +184,37 @@ mock.teams[2] = lua.table_from({'name': 'The Drunken Monks', 'size': 3, 'rating'
 mock.party = lua.table_from(['Claude', 'Elgrom'])
 mock.leader = True
 open_master()
-check(pick('Rated'), 'the menu offers Rated')
-c = category('3v3 Team')
-check(visible(c), 'a row per arena team')
+check(pick('Standard'), 'the menu offers Standard')
+c = category('3v3 Arena')
+check(visible(c), 'a row per bracket')
 c.Click(c)
 texts = visible_texts()
-check('The Drunken Monks' in texts, 'the team on the sheet')
-check('Drunks' in texts and '1702' in texts, 'its roster with personal ratings')
-check(mock.rosterAsked[2], 'and the roster was asked for')
+check('The Drunken Monks' in texts, 'the 3v3 team named on the sheet')
+check('1650' in texts, 'its rating beside the 3v3 row')
 check('Your group: you, Claude and Elgrom' in texts, 'the group line')
-jb = button_labelled('Join Battle')
-check(enabled(jb), 'Join Battle on for a leader with a group')
+jr = button_labelled('Join Rated')
+check(enabled(jr), 'Join Rated on for a leader with a group and the team')
+check(enabled(button_labelled('Join Battle')), 'and the skirmish beside it')
 g.CenturionArenaMasterTypeButton.Click(g.CenturionArenaMasterTypeButton)
 check(g.DropDownList1._shown, 'the menu opens')
+shown = [b for b in [mock.listButtons[i] for i in range(1, len(mock.listButtons) + 1)] if b._shown]
+check(not any(b.info.icon for b in shown), 'no icons in the menu')
+check([b.info.text for b in shown if b.info.text and not b.info.isTitle] ==
+      ['Standard', 'Multi-team', 'Buffle Shuffle', 'All-Star', 'Replays'], 'Standard, Multi-team, Buffle Shuffle, All-Star, Replays')
 hover = None
-for b in [mock.listButtons[i] for i in range(1, len(mock.listButtons) + 1)]:
-    if b._shown and b.info.text == 'All-Star':
+for b in shown:
+    if b.info.text == 'All-Star':
         hover = b._id
-dump('2_rated_menu_open', hover)
+dump('2_standard_menu_open', hover)
 g.CloseDropDownMenus()
-jb.Click(jb)
-check(last_sent() == 'ARENAMASTER:JOIN:R:3:1', 'rated joins as the group with the team size')
+jr.Click(jr)
+check(last_sent() == 'ARENAMASTER:JOIN:R:3:1', 'Join Rated queues the 3v3 team as the group')
 
 mock.leader = False
 open_master()
-pick('Rated')
+pick('Standard')
 check('Only your group leader can queue the group.' in visible_texts(), 'not the leader: says so')
-check(not enabled(button_labelled('Join Battle')), 'and rated is greyed')
+check(not enabled(button_labelled('Join Rated')), 'and rated is greyed')
 mock.leader = True
 am.Hide(am)
 
@@ -342,11 +346,10 @@ am.Hide(am)
 # 7. no team, and a disabled mode ---------------------------------------------------------
 mock.teams = lua.table_from({})
 open_master(modes='1:1:1:1:0:1:4')
-pick('Rated')
-texts = visible_texts()
-check(any(t and t.startswith('You are not on an arena team.') for t in texts), 'no team: a clear message')
-check(button_labelled('Join Battle') is None, 'and nothing to join')
-dump('7_rated_no_team')
+pick('Standard')
+check(not enabled(button_labelled('Join Rated')), 'no team: Join Rated greyed')
+check(enabled(button_labelled('Join Battle')), 'the skirmish still joins')
+dump('7_standard_no_team')
 check(not pick('All-Star'), 'a disabled mode cannot be picked')
 g.CloseDropDownMenus()
 
