@@ -962,6 +962,89 @@ do
 		Commit(lu, list)
 	end
 
+	-- Clicking a stock opens a menu of the same choices as the bench (owner:
+	-- "let them click the tiles to choose from a dropdown as an alt method").
+	local menuSlot
+	local pickMenu = CreateFrame("Frame", "CenturionArenaMasterPickMenu", am, "UIDropDownMenuTemplate")
+
+	local function Hex(class)
+		local r, g, b = ClassColour(class)
+		return string.format("|cff%02x%02x%02x", r * 255, g * 255, b * 255)
+	end
+
+	-- " - stock N" when another stock already plays that pick.
+	local function WhereElse(lu, pick, index)
+		for i = 1, lu.lives - 1 do
+			if i ~= index and (lu.picks[i] or "-") == pick then
+				return "  |cff9d9d9d- stock " .. (i + 1) .. "|r"
+			end
+		end
+		return ""
+	end
+
+	local function InitPickMenu(self, level)
+		local lu = Editable()
+		if not lu or not menuSlot then
+			return
+		end
+		local index = menuSlot
+		local current = lu.picks[index] or "-"
+		local info
+		if level == 2 then
+			for _, class in ipairs(CLASS_ORDER) do
+				local id = "s" .. class
+				local blocked = class == lu.first.class
+				info = UIDropDownMenu_CreateInfo()
+				info.text = blocked and ClassName(class)
+					or (Hex(class) .. ClassName(class) .. "|r" .. WhereElse(lu, id, index))
+				info.checked = current == id
+				info.disabled = blocked
+				info.func = function() PlacePick(index, id) end
+				UIDropDownMenu_AddButton(info, level)
+			end
+			return
+		end
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Stock " .. (index + 1)
+		info.isTitle = true
+		info.notCheckable = true
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Random"
+		info.checked = current == "-"
+		info.func = function() ClearPick(index) end
+		UIDropDownMenu_AddButton(info, level)
+
+		if #lu.options > 0 then
+			info = UIDropDownMenu_CreateInfo()
+			info.text = "Your characters"
+			info.isTitle = true
+			info.notCheckable = true
+			UIDropDownMenu_AddButton(info, level)
+			for _, o in ipairs(lu.options) do
+				local id = o.id
+				local blocked = o.class == lu.first.class
+				info = UIDropDownMenu_CreateInfo()
+				info.text = blocked and (o.name .. "  " .. ClassName(o.class))
+					or (Hex(o.class) .. o.name .. "|r  |cff9d9d9d" .. ClassName(o.class) .. "|r" .. WhereElse(lu, id, index))
+				info.checked = current == id
+				info.disabled = blocked
+				info.func = function() PlacePick(index, id) end
+				UIDropDownMenu_AddButton(info, level)
+			end
+		end
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Standard kit"
+		info.hasArrow = true
+		info.notCheckable = true
+		info.value = "STANDARD"
+		UIDropDownMenu_AddButton(info, level)
+	end
+	UIDropDownMenu_Initialize(pickMenu, InitPickMenu, "MENU")
+
 	-- What is being dragged: { life = <index of the pick> } or { pick = <token> }.
 	local drag
 	local dragIcon = CreateFrame("Frame", nil, UIParent)
@@ -1025,7 +1108,7 @@ do
 		local b = CreateFrame("Button", nil, poster)
 		b:SetWidth(42)
 		b:SetHeight(42)
-		b:RegisterForClicks("RightButtonUp")
+		b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 		b:RegisterForDrag("LeftButton")
 		b.circle = b:CreateTexture(nil, "ARTWORK")
 		b.circle:SetPoint("CENTER", b, "CENTER")
@@ -1041,10 +1124,23 @@ do
 		b.name:SetFontObject(fontInk10)
 		b.sub = poster:CreateFontString(nil, "OVERLAY")
 		b.sub:SetFontObject(fontInk9)
-		b:SetScript("OnClick", function()
-			if i > 1 then
-				ClearPick(i - 1)
+		b:SetScript("OnClick", function(self, button)
+			if i == 1 or not Editable() then
+				return
 			end
+			if button == "RightButton" then
+				CloseDropDownMenus()
+				ClearPick(i - 1)
+				return
+			end
+			PlaySound("igMainMenuOptionCheckBoxOn")
+			if menuSlot == i - 1 and DropDownList1 and DropDownList1:IsShown() then
+				CloseDropDownMenus()
+				return
+			end
+			-- Beside the portrait, clear of the names under the row.
+			menuSlot = i - 1
+			ToggleDropDownMenu(1, nil, pickMenu, self, self:GetWidth(), self:GetHeight())
 		end)
 		b:SetScript("OnDragStart", function(self)
 			if i > 1 and Editable() then
@@ -1054,12 +1150,12 @@ do
 		b:SetScript("OnDragStop", Drop)
 		b:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_TOP")
-			GameTooltip:SetText("Life " .. i, 1, 1, 1)
+			GameTooltip:SetText("Stock " .. i, 1, 1, 1)
 			if i == 1 then
-				GameTooltip:AddLine("The character you queue with always plays your first life.", nil, nil, nil, true)
+				GameTooltip:AddLine("The character you queue with always plays your first stock.", nil, nil, nil, true)
 			else
-				GameTooltip:AddLine("Drag a character or kit from the left onto it to choose who plays it.", nil, nil, nil, true)
-				GameTooltip:AddLine("Drag it onto another life to move it, or off the row for Random.", nil, nil, nil, true)
+				GameTooltip:AddLine("Click to choose who plays it, or drag a character or kit onto it from the left.", nil, nil, nil, true)
+				GameTooltip:AddLine("Drag it onto another stock to move it, or off the row for Random.", nil, nil, nil, true)
 			end
 			GameTooltip:Show()
 		end)
@@ -1121,11 +1217,11 @@ do
 				GameTooltip:AddLine(self.tipText, nil, nil, nil, true)
 			end
 			if self.blocked then
-				GameTooltip:AddLine("Your first life is already this class.", 1, 0.3, 0.3, true)
+				GameTooltip:AddLine("Your first stock is already this class.", 1, 0.3, 0.3, true)
 			elseif self.used then
-				GameTooltip:AddLine("In your lineup. Drag it to another life to move it there.", 0.5, 1, 0.5, true)
+				GameTooltip:AddLine("In your lineup. Drag it to another stock to move it there.", 0.5, 1, 0.5, true)
 			else
-				GameTooltip:AddLine("Drag onto a life.", 0.5, 1, 0.5, true)
+				GameTooltip:AddLine("Drag onto a stock.", 0.5, 1, 0.5, true)
 			end
 			GameTooltip:Show()
 		end)
@@ -1159,7 +1255,7 @@ do
 			b.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
 			b.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 			b.tipTitle = "Random"
-			b.tipText = "A life on Random takes the next of the characters you did not place, then a standard kit."
+			b.tipText = "A stock on Random takes the next of the characters you did not place, then a standard kit."
 		else
 			local class = CLASS_ORDER[k - 1]
 			b.class = class
@@ -1246,7 +1342,7 @@ do
 	-- What a life shows: { icon texture or class token, name, sub }.
 	local function LifeLook(lu, i)
 		if i == 1 then
-			return CLASS_TOKEN[lu.first.class], lu.first.name, "First life"
+			return CLASS_TOKEN[lu.first.class], lu.first.name, "First stock"
 		end
 		local pick = lu.picks[i - 1] or "-"
 		if pick == "-" then
@@ -1826,8 +1922,8 @@ PAGES.B = {
 	end,
 }
 
-local LIVES_WORD = { "One life", "Two lives", "Three lives", "Four lives", "Five lives",
-	"Six lives", "Seven lives", "Eight lives", "Nine lives" }
+local LIVES_WORD = { "One stock", "Two stocks", "Three stocks", "Four stocks", "Five stocks",
+	"Six stocks", "Seven stocks", "Eight stocks", "Nine stocks" }
 
 PAGES.A = {
 	rows = function()
@@ -1841,10 +1937,10 @@ PAGES.A = {
 		local size = row.size
 		local lu = state.lineup
 		local lives = lu and lu.lives or 4
-		local word = LIVES_WORD[lives] or (lives .. " lives")
+		local word = LIVES_WORD[lives] or (lives .. " stocks")
 		local headingSub
 		if lu and lu.editable then
-			headingSub = "Drag characters and kits from the left onto a life."
+			headingSub = "Click a stock to choose who plays it, or drag characters and kits onto it."
 		elseif lu and lu.shuffled then
 			headingSub = "shuffled every match"
 		end
@@ -1853,7 +1949,7 @@ PAGES.A = {
 			icon = MODE.A.icon,
 			title = row.label,
 			sub = word .. ", one class each",
-			body = word .. ", each a different class. Each death brings you back where you fell as the next character of your lineup: their gear, talents, keybindings and macros. A standard kit is the tournament spec and gear. The last team with lives left wins.",
+			body = word .. ", each a different class. Each death brings you back where you fell as the next character of your lineup: their gear, talents, keybindings and macros. A standard kit is the tournament spec and gear. The last team with stocks left wins.",
 			heading = "Your lineup",
 			headingSub = headingSub,
 			allstar = lu ~= nil,

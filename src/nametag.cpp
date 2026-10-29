@@ -733,7 +733,7 @@ static int MarkerText(int key, char* out, size_t size)
     int n;
     if (lives > 0)
         n = _snprintf_s(out, size, _TRUNCATE, "|cff%06x%s - %d %s|r\n", rgb & 0xFFFFFF, kMarkerWord[mark],
-            lives, lives == 1 ? "life" : "lives");
+            lives, lives == 1 ? "stock" : "stocks");
     else
         n = _snprintf_s(out, size, _TRUNCATE, "|cff%06x%s|r\n", rgb & 0xFFFFFF, kMarkerWord[mark]);
     return n > 0 ? n : 0;

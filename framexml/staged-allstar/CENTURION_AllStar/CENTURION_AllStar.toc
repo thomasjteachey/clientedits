@@ -1,6 +1,6 @@
 ## Interface: 30300
 ## Title: CENTURION All-Star
-## Notes: The client side of an All-Star class swap: quiet spellbook lines, the borrowed character's keybindings and macros, and your lives.
+## Notes: The client side of an All-Star class swap: quiet spellbook lines, the borrowed character's keybindings and macros, and your stocks.
 ## Author: Centurion
 ## SavedVariables: CENTURION_AllStarSettings
 ## SavedVariablesPerCharacter: CENTURION_AllStarMade
