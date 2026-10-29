@@ -47,6 +47,7 @@
 #include "nametag.h"
 #include "rulerelax.h"
 #include "sndguard.h"
+#include "spectate.h"
 #include "unitbars.h"
 
 #define DEFAULT_LOCK_ANIMS   "119,223"     // StealthWalk, StealthRun
@@ -503,6 +504,12 @@ static void Install(HMODULE self)
 
     UnitBars_LoadSettings(g_dir);
     UnitBars_Install();
+
+    // CenturionSpectate: a follow camera that does not turn with the unit (the
+    // client's commentator camera). Its own [Spectate] section, ON by default;
+    // its Lua function rides on the name tag's world-Lua hook like UnitBars'.
+    Spectate_LoadSettings(g_dir);
+    Spectate_Install();
 
     // Aura-gated waiver of client-side spell rules (the Valra set's "no weapon
     // requirement"): its own [RuleRelax] section, ON by default keyed on 90217.
