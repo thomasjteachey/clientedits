@@ -97,3 +97,21 @@ NORMAL camera:
   kept for CenturionSpectate("click") and not acted on.
 
 Not verified in game at the time of writing.
+
+## Landing and the focus (2026-10-29, third version)
+
+- A movement key no longer hands the camera back at once. The replay server
+  moves the viewer onto the player they were watching (BGReplay.cpp,
+  `SPECTATE OFF LAND`), and the camera stays on that unit until the active
+  player is within 4 yards of it (positions at unit `+0x798`/`+0x79C`/`+0x7A0`,
+  as playercollide.cpp reads them) or 1.5 s pass.
+- `0x0051FF20` SetFocus(WGUID*), cdecl: what ClearFocus (`0x005225E0`, Lua
+  table entry `0x00AC8360`) and FocusUnit call. If `[0x00D4139C]` is set it
+  calls `0x00513530(0, 0)` and changes nothing; otherwise it clears flag 0x2000
+  on the old focus unit (`0x00715900`), stores the guid at `0x00BD07D0`/`D4`,
+  sets 0x2000 on the new one (`0x007158C0`) and fires event 0x9E
+  (PLAYER_FOCUS_CHANGED, `0x0081B530`). The spectate addon makes the watched
+  player the focus and points PlayerFrame at `"focus"` (UnitFrame_SetUnit), so
+  the player frame is theirs with every UNIT_* event.
+- `0x0060C1C0` turns a unit token into a guid (edx:eax) - every Unit* Lua API
+  calls it; noted, not hooked.

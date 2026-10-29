@@ -1,8 +1,9 @@
 ## Interface: 30300
 ## Title: Centurion Replay Arena UI
-## Version: v64-squads-allstar-spectate
-## Notes: v64: frames follow shuffle rounds, All-Star lives and Four Corners squads; spectate view
+## Version: v65-spectate-scoreboard
+## Notes: v65: frames follow shuffle rounds, All-Star lives and Four Corners squads; spectate view; scoreboard any time
 ## SavedVariables: teamname, teamscore, tournamentMode
 SunwellAS.lua
 CenturionReplaySpectate.lua
+CenturionReplayScore.lua
 combatfeedback.lua

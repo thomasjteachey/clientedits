@@ -32,6 +32,12 @@
 //   0x005277B0  interact(guidLo, guidHi), cdecl: a right-click on a unit in the
 //               world (0x004F78EA; a left-click goes to 0x005274F0, target) and
 //               InteractUnit(). InteractHook takes armed right-clicks on players.
+//   0x0051FF20  SetFocus(WGUID*), cdecl - what ClearFocus (0x005225E0) and
+//               FocusUnit call: moves the focus flag 0x2000 between the units,
+//               stores the guid at 0x00BD07D0 and fires PLAYER_FOCUS_CHANGED
+//               (event 0x9E). FocusUnit is protected in Lua; the replay's
+//               spectate puts the watched player there so the player frame can
+//               show them ("focus" gets every UNIT_* event).
 //
 // The Lua function is registered as a 5-byte jmp in int3 padding inside .text
 // (Lua will not call a function outside it, gluebridge.cpp): 0x00569904, in the
@@ -47,13 +53,15 @@
 
 static char  g_dir[MAX_PATH] = { 0 };
 static int   g_enabled = 1;          // [Spectate] Enabled
-static int   g_ready = 0;            // 1 camera + Lua, 2 right-click too
+static int   g_ready = 0;            // 1 camera + Lua, 2 right-click too, 4 focus
 static int   g_faults = 0;
 
 static volatile LONG g_on = 0;       // a unit to keep the camera on
 static volatile LONG g_tick = 0;     // the per-frame call has work (a follow, or a restore)
 static volatile LONG g_needRestore = 0;
 static volatile LONG g_stoppedByMove = 0;
+static volatile LONG g_landing = 0;  // a movement key ended the follow: camera stays until the server lands us there
+static DWORD g_landStart = 0;
 static DWORD g_followLo = 0, g_followHi = 0;
 static BYTE* g_lockCamera = NULL;    // the camera holding our yaw lock
 
@@ -73,6 +81,13 @@ static const BYTE  kGetActiveSig[] = { 0x64, 0x8B, 0x0D, 0x2C, 0x00, 0x00, 0x00,
 static const DWORD kObjectPtr = 0x004D4DB0;
 static const BYTE  kObjectPtrSig[] = { 0x55, 0x8B, 0xEC, 0x64, 0x8B, 0x0D, 0x2C, 0x00, 0x00, 0x00 };
 
+static const DWORD kSetFocus = 0x0051FF20;
+static const BYTE  kSetFocusSig[] = { 0x55, 0x8B, 0xEC, 0xA1, 0xD0, 0x07, 0xBD, 0x00, 0x56, 0x8B, 0x75, 0x08 };
+typedef void (__cdecl* SetFocus_t)(DWORD* guid);
+#define kFocusGuid ((DWORD*)0x00BD07D0)
+static int   g_focusBorrowed = 0;
+static DWORD g_savedFocus[2] = { 0, 0 };
+
 static const DWORD kLuaThunk = 0x00569904;
 static const BYTE  kPadSig[] = { 0xCC, 0xCC, 0xCC, 0xCC, 0xCC };
 
@@ -81,6 +96,9 @@ static const DWORD kOff_Camera     = 0x7E20;
 static const DWORD kCam_Target     = 0x88;
 static const DWORD kCam_YawLock    = 0xAC;
 static const DWORD kOff_Type       = 0x14;   // TYPEID: 3 unit, 4 player
+static const DWORD kOff_PosX       = 0x798;  // float x, y +0x79C, z +0x7A0 (playercollide.cpp)
+static const DWORD kLandTimeoutMs  = 1500;
+static const float kLandNear       = 4.0f;
 static const DWORD kTypeMaskUnit   = 0x08;
 
 static const DWORD kRetCameraBlock = 0x004FA6A2;
@@ -199,12 +217,37 @@ static void RestoreCamera()
         ((SetCameraTarget_t)kSetCameraTarget)(wf, player, 0);
 }
 
+// After a movement key: the server puts the player where the unit stands
+// (BGReplay.cpp, SPECTATE OFF LAND). The camera stays on the unit until then,
+// so it does not swing back to where the player was for a moment first.
+static bool Landed()
+{
+    if (GetTickCount() - g_landStart > kLandTimeoutMs)
+        return true;
+    BYTE* const unit = (BYTE*)UnitObject(g_followLo, g_followHi);
+    unsigned __int64 const active = ((GetActiveGuid_t)kGetActiveGuid)();
+    BYTE* const player = (BYTE*)UnitObject(DWORD(active), DWORD(active >> 32));
+    if (!unit || !player)
+        return true;
+    float const* const u = (float const*)(unit + kOff_PosX);
+    float const* const p = (float const*)(player + kOff_PosX);
+    float const dx = u[0] - p[0], dy = u[1] - p[1], dz = u[2] - p[2];
+    return dx * dx + dy * dy + dz * dz <= kLandNear * kLandNear;
+}
+
 // Every frame while there is work: keep the camera on the unit (put it back
 // on after a replay restart re-creates the unit), or hand it back.
 static void CameraTick()
 {
     if (!g_on)
     {
+        if (g_landing)
+        {
+            if (!Landed())
+                return;
+            InterlockedExchange(&g_landing, 0);
+            RestoreCamera();
+        }
         if (g_needRestore)
         {
             InterlockedExchange(&g_needRestore, 0);
@@ -243,20 +286,23 @@ static void __stdcall CameraTickFromHook()
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         InterlockedExchange(&g_on, 0);
         InterlockedExchange(&g_tick, 0);
+        InterlockedExchange(&g_landing, 0);
         g_lockCamera = NULL;
         if (g_faults++ < 5)
             Log("camera tick faulted (0x%08lX) - follow off", GetExceptionCode());
     }
 }
 
-// A movement key while following: the follow ends, the camera goes back on the
-// next frame's tick, and the addon hears why on its next CenturionSpectate("?").
+// A movement key while following: the follow ends, the camera goes back once
+// the player has landed on the unit (Landed), and the addon hears why on its
+// next CenturionSpectate("?").
 static void __stdcall StopFollowFromHook()
 {
     if (!g_on)
         return;
+    g_landStart = GetTickCount();
+    InterlockedExchange(&g_landing, 1);
     InterlockedExchange(&g_on, 0);
-    InterlockedExchange(&g_needRestore, 1);
     InterlockedExchange(&g_stoppedByMove, 1);
 }
 
@@ -356,6 +402,7 @@ static void StartFollow(DWORD lo, DWORD hi)
     g_followLo = lo;
     g_followHi = hi;
     InterlockedExchange(&g_needRestore, 0);
+    InterlockedExchange(&g_landing, 0);
     InterlockedExchange(&g_on, 1);
     InterlockedExchange(&g_tick, 1);
     CameraTick();                      // now, not next frame
@@ -363,10 +410,11 @@ static void StartFollow(DWORD lo, DWORD hi)
 
 static void StopFollow()
 {
-    if (!g_on && !g_needRestore)
+    if (!g_on && !g_needRestore && !g_landing)
         return;
     InterlockedExchange(&g_on, 0);
     InterlockedExchange(&g_needRestore, 0);
+    InterlockedExchange(&g_landing, 0);
     RestoreCamera();
     InterlockedExchange(&g_tick, 0);
 }
@@ -435,6 +483,47 @@ static int Spectate(void* L)
         pLuaPushNumber(L, 0.0);
         return 1;
     }
+    // 2: knows "focus" and lands the camera after a movement key.
+    if (arg && !_stricmp(arg, "version"))
+    {
+        pLuaPushNumber(L, 2.0);
+        return 1;
+    }
+
+    // "focus", "0x<guid>" | "off": the watched player as the focus (the
+    // focus there before comes back on "off"). Returns the focus guid now.
+    if (arg && !_stricmp(arg, "focus"))
+    {
+        if (!(g_ready & 4))
+        {
+            pLuaPushNil(L);
+            return 1;
+        }
+        const char* what = pLuaToLString(L, 2, NULL);
+        DWORD lo = 0, hi = 0;
+        if (ParseGuid(what, lo, hi))
+        {
+            if (!g_focusBorrowed)
+            {
+                g_savedFocus[0] = kFocusGuid[0];
+                g_savedFocus[1] = kFocusGuid[1];
+                g_focusBorrowed = 1;
+            }
+            DWORD guid[2] = { lo, hi };
+            ((SetFocus_t)kSetFocus)(guid);
+        }
+        else if (g_focusBorrowed)
+        {
+            g_focusBorrowed = 0;
+            DWORD guid[2] = { g_savedFocus[0], g_savedFocus[1] };
+            ((SetFocus_t)kSetFocus)(guid);
+        }
+        if (kFocusGuid[0] || kFocusGuid[1])
+            PushGuid(L, kFocusGuid[0], kFocusGuid[1]);
+        else
+            pLuaPushNil(L);
+        return 1;
+    }
     if (arg && !_stricmp(arg, "click"))
     {
         LONG const seq = g_clickSeq;
@@ -464,6 +553,7 @@ static int __cdecl Lua_Spectate(void* L)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         InterlockedExchange(&g_on, 0);
         InterlockedExchange(&g_tick, 0);
+        InterlockedExchange(&g_landing, 0);
         g_lockCamera = NULL;
         pushed = 0;
         if (g_faults++ < 5)
@@ -483,7 +573,9 @@ void Spectate_WorldLuaReady()
     InterlockedExchange(&g_needRestore, 0);
     InterlockedExchange(&g_armed, 0);
     InterlockedExchange(&g_stoppedByMove, 0);
+    InterlockedExchange(&g_landing, 0);
     g_lockCamera = NULL;
+    g_focusBorrowed = 0;               // the old world's focus is gone with it
     pRegisterFunction("CenturionSpectate", (void*)kLuaThunk);
 }
 
@@ -520,5 +612,9 @@ void Spectate_Install()
     if (SigOk(kInteract, kInteractSig, sizeof(kInteractSig), "CGGameUI interact") &&
         JumpTo(kInteract, (void*)&InteractHook))
         g_ready |= 2;
-    Log("installed (normal camera + yaw lock, right-click %s)", (g_ready & 2) ? "on" : "OFF");
+    // The focus is only called, never patched.
+    if (SigOk(kSetFocus, kSetFocusSig, sizeof(kSetFocusSig), "SetFocus"))
+        g_ready |= 4;
+    Log("installed (normal camera + yaw lock, right-click %s, focus %s)",
+        (g_ready & 2) ? "on" : "OFF", (g_ready & 4) ? "on" : "OFF");
 }

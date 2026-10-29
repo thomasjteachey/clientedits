@@ -98,7 +98,7 @@ function GameTooltip:Hide() end
 -- The DLL's follow camera.
 MOCK.spectateLog = {}
 function CenturionSpectate(arg, n)
-	if arg ~= "?" and arg ~= "arm" and arg ~= "click" then
+	if arg ~= "?" and arg ~= "arm" and arg ~= "click" and arg ~= "version" and arg ~= "focus" then
 		table.insert(MOCK.spectateLog, tostring(arg) .. (n and (" " .. tostring(n)) or ""))
 	end
 	if arg == "?" then
@@ -112,6 +112,17 @@ function CenturionSpectate(arg, n)
 	elseif arg == "disarm" then
 		MOCK.armed = false
 		return 0
+	elseif arg == "version" then
+		return MOCK.dllVersion or 2
+	elseif arg == "focus" then
+		if type(n) == "string" and n:sub(1, 2) == "0x" then
+			MOCK.savedFocus = MOCK.savedFocus or MOCK.focus or "none"
+			MOCK.focus = n
+		elseif MOCK.savedFocus then
+			MOCK.focus = MOCK.savedFocus ~= "none" and MOCK.savedFocus or nil
+			MOCK.savedFocus = nil
+		end
+		return MOCK.focus
 	elseif arg == "click" then
 		local c = MOCK.click
 		MOCK.click = nil
@@ -141,9 +152,60 @@ for i = 1, 12 do
 	local b = CreateFrame("CheckButton", "ActionButton" .. i, UIParent)
 	b.action = i
 end
+-- The default player cast bar (CastingBarFrame.xml/.lua's names and fields).
+CastingBarFrame = CreateFrame("StatusBar", "CastingBarFrame", UIParent)
+CastingBarFrame.showCastbar = true
+CastingBarFrame:Hide()
+for _, part in ipairs({ "Spark", "Text", "Flash" }) do
+	CastingBarFrame:CreateTexture("CastingBarFrame" .. part, "OVERLAY")
+end
+CastingBarFrameText = CastingBarFrame:CreateFontString("CastingBarFrameText", "OVERLAY")
+CastingBarFrameIcon = CastingBarFrame:CreateTexture("CastingBarFrameIcon", "OVERLAY")
+INTERRUPTED = "Interrupted"
+FAILED = "Failed"
+CASTING_BAR_HOLD_TIME = 1
+function CastingBarFrame_FinishSpell(self, barSpark, barFlash)
+	self:SetStatusBarColor(0.0, 1.0, 0.0)
+	if barSpark then barSpark:Hide() end
+	if barFlash then barFlash:SetAlpha(0.0); barFlash:Show() end
+	self.flash = 1
+	self.fadeOut = 1
+	self.casting = nil
+	self.channeling = nil
+end
+
 MOCK.cvars = { Sound_ListenerAtCharacter = "1" }
 function GetCVar(name) return MOCK.cvars[name] end
 function SetCVar(name, value) MOCK.cvars[name] = tostring(value) end
 ChatFrame_AddMessageEventFilter = function(event, fn) MOCK.chatFilters = MOCK.chatFilters or {}; MOCK.chatFilters[event] = fn end
 ERR_LEARN_SPELL_S = "You have learned a new spell: %s."
 ERR_SPELL_UNLEARNED_S = "You have unlearned %s."
+
+-- The scoreboard (WorldStateFrame.lua): shut in an arena until it is over.
+WorldStateScoreFrame = CreateFrame("Frame", "WorldStateScoreFrame", UIParent)
+WorldStateScoreFrame:Hide()
+function ShowUIPanel(f) f:Show() end
+function HideUIPanel(f) f:Hide() end
+MOCK.scoreRequests = 0
+function RequestBattlefieldScoreData() MOCK.scoreRequests = MOCK.scoreRequests + 1 end
+function ToggleWorldStateScoreFrame()
+	if WorldStateScoreFrame:IsShown() then HideUIPanel(WorldStateScoreFrame) return end
+	MOCK.stockToggle = (MOCK.stockToggle or 0) + 1   -- an arena: stays shut
+end
+
+-- The player frame, the focus frame and the squad frames' feed.
+PlayerFrame = CreateFrame("Button", "PlayerFrame", UIParent)
+PlayerFrame.unit = "player"
+PlayerFrameHealthBar = CreateFrame("StatusBar", "PlayerFrameHealthBar", PlayerFrame)
+PlayerFrameManaBar = CreateFrame("StatusBar", "PlayerFrameManaBar", PlayerFrame)
+PlayerLevelText = PlayerFrame:CreateFontString("PlayerLevelText", "OVERLAY")
+FocusFrame = CreateFrame("Button", "FocusFrame", UIParent)
+function Region:EnableMouse(on) self._mouse = on end
+function Region:SetAlpha(a) self._alpha = a end
+function UnitFrame_SetUnit(frame, unit, hb, mb) frame.unit = unit; hb.unit = unit; if mb then mb.unit = unit end end
+function UnitLevel(unit) if unit == "focus" then return 80 end return 1 end
+function UnitGUID(unit) if unit == "focus" then return MOCK.focus end return nil end
+function InCombatLockdown() return MOCK.combat end
+CENTURION_SQUAD_NAMES = { [0] = "Gold Team", [1] = "Green Team", [2] = "Blue Team", [3] = "Purple Team" }
+MOCK.squadLines = {}
+function CenturionSquadFrames_OnLine(line) table.insert(MOCK.squadLines, line) end

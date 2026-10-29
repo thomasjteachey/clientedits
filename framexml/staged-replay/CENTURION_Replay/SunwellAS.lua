@@ -327,6 +327,7 @@ local toggle
 local leave
 local replay
 local spectateButton
+local scoreButton
 
 -- Scoreboard Frame
 local scoreFrame
@@ -2976,6 +2977,11 @@ local function Execute(target, prefix, ...)
         UpdatePet(target, value)
     elseif (prefix == "PET") then
         UpdatePetTexture(target, tonumber(value))
+    elseif (prefix == "CSG" or prefix == "CSF" or prefix == "CSD" or prefix == "CHS" or prefix == "CHU") then
+        -- The spectated player's casts, for the viewer's own cast bar.
+        if CenturionReplaySpectate_OnCommand then
+            CenturionReplaySpectate_OnCommand(target, prefix, value)
+        end
     else
         -- quiet mode: addon chat message removed
     end
@@ -3155,6 +3161,7 @@ local function CREP_Enable()
             spectateButton.text:SetText("Spectate")
         end
     end
+    if scoreButton then scoreButton:Show() end
     ReplayUIEnsureAuraCoordScanner()
     if ReplayUIEnsureSpellHistoryTooltipScanner then
         ReplayUIEnsureSpellHistoryTooltipScanner()
@@ -3183,6 +3190,10 @@ local function CREP_Disable()
     if leave then leave:Hide() end
     if replay then replay:Hide() end
     if spectateButton then spectateButton:Hide() end
+    if scoreButton then scoreButton:Hide() end
+    if WorldStateScoreFrame and WorldStateScoreFrame:IsShown() then
+        HideUIPanel(WorldStateScoreFrame)
+    end
     TimeFrame:Hide()
 
     if ReplayUIHideAuraTooltipByCoords then
@@ -3791,6 +3802,25 @@ local function init()
     spectateButton.text:SetText("Spectate")
     spectateButton:Hide()
     CREP_SpectateButton = spectateButton
+
+    -- The scoreboard as the replay stands (CenturionReplayScore.lua).
+    scoreButton = CreateFrame("Button", nil, WorldFrame)
+    scoreButton:SetHeight(20)
+    scoreButton:SetWidth(130)
+    scoreButton:SetPoint("TOPLEFT", 528, 0)
+    scoreButton.texture = scoreButton:CreateTexture()
+    scoreButton.texture:SetAllPoints(scoreButton)
+    scoreButton.texture:SetTexture(0.45, 0.30, 0.10)
+    scoreButton:SetScript("OnClick", function()
+        if CenturionReplayScore_Toggle then
+            CenturionReplayScore_Toggle()
+        end
+    end)
+    scoreButton.text = scoreButton:CreateFontString()
+    scoreButton.text:SetFont(STANDARD_TEXT_FONT, 16, "OUTLINE")
+    scoreButton.text:SetPoint("CENTER", 0, 0)
+    scoreButton.text:SetText("Scoreboard")
+    scoreButton:Hide()
 
     setupScoreboardFrame()
 

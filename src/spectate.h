@@ -21,10 +21,19 @@
 //                                              "spectate them" (not interact)
 //   guid = CenturionSpectate("click")         the player last right-clicked while
 //                                              armed, once, else nil
+//   v = CenturionSpectate("version")          2 (older DLLs answer nil: they took
+//                                              any other word for "off")
+//   guid = CenturionSpectate("focus", "0xGUID" | "off")
+//                                              make that unit the focus (FocusUnit
+//                                              is protected in Lua), or put back
+//                                              the focus there before; returns the
+//                                              focus now
 //
 // A movement key (W/A/S/D, strafe, autorun, both mouse buttons) ends the follow
-// and moves the player's own character as usual. See docs/SPECTATE_CAMERA_RE.md
-// for the addresses.
+// and moves the player's own character as usual. The camera stays on the unit
+// until the player stands within 4 yards of it (the replay server puts them
+// there) or 1.5 s pass, so it does not jump back to where the player was first.
+// See docs/SPECTATE_CAMERA_RE.md for the addresses.
 #pragma once
 
 // Read [Spectate] from AnimSpeedFix.ini (dir = folder of this DLL, with the

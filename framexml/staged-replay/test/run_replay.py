@@ -25,7 +25,7 @@ for sid, name, icon in [(133, 'Fireball', 'Spell_Fire_FlameBolt'), (118, 'Polymo
 g.MOCK.spells = spells
 g.MOCK.itemIcons[42122] = 'Interface\\Icons\\INV_Jewelry_Necklace_37'
 
-for f in ('SunwellAS.lua', 'CenturionReplaySpectate.lua', 'combatfeedback.lua'):
+for f in ('SunwellAS.lua', 'CenturionReplaySpectate.lua', 'CenturionReplayScore.lua', 'combatfeedback.lua'):
     lua.execute(open(os.path.join(ADDON, f), encoding='latin1').read())
 
 failures = []
@@ -153,6 +153,24 @@ check(all(not g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames ar
 check(g.CenturionReplaySpectateStatus._shown and 'move to stop' in (g.CenturionReplaySpectateStatus.text._text or ''),
       'a line says who is spectated and how to stop')
 
+# their player frame, their enemy frames
+check(g.PlayerFrame.unit == 'focus' and g.MOCK.focus == sh[2] and g.PlayerLevelText._text in ('80', 80),
+      'your player frame shows them (through the focus)')
+check(g.FocusFrame._alpha == 0, 'the focus frame does not show them twice')
+lines = list(g.MOCK.squadLines.values())
+mine = [l for l in lines if l.startswith('SQ:')]
+check(mine and mine[-1] == 'SQ:0:2', 'the enemy frames are set up from their side (gold, two teams): %s' % mine[-1:])
+greens = [l for l in lines if l.startswith('SQR:1:')]
+check(greens and greens[-1].count(';') == 3 and 'Shuffler0' in greens[-1], 'their enemies are the green side, this round: %s' % greens[-1:])
+check(any(l.startswith('SQH:1:') for l in lines), 'with health and power')
+cmd(sh[3], 'CHP', 40)
+g.MOCK.update(0.3)
+check(list(g.MOCK.squadLines.values())[-1].startswith('SQH:1:') and '40.' in list(g.MOCK.squadLines.values())[-1],
+      'an enemy losing health shows on the enemy frame')
+g.MOCK.focus = sh[4]
+g.MOCK.update(0.3)
+check(g.MOCK.focus == sh[2], 'focusing someone else from a frame puts them back')
+
 # the echo of our own whisper does not break the feed parser
 msg('SPECTATE ' + sh[2])
 check(True, 'our own SPECTATE whisper coming back is ignored without an error')
@@ -166,6 +184,30 @@ check(g.ActionButton1._lockedHighlight and not g.ActionButton2._lockedHighlight,
 g.MOCK.now = g.MOCK.now + 1
 g.MOCK.update(0.1)
 check(not g.ActionButton1._lockedHighlight, 'the light goes out')
+
+# their casts on YOUR cast bar
+g.MOCK.spells[5143] = lua.table('Arcane Missiles', 'Interface\Icons\Spell_Nature_StarFall')
+bar = g.CastingBarFrame
+cmd(sh[2], 'SPE', '118,1500')
+check(bar._shown and bar.casting == 1 and abs(bar.maxValue - 1.5) < 1e-6 and g.CastingBarFrameText._text == 'Polymorph',
+      'a cast of theirs starts your cast bar (Polymorph, 1.5 s)')
+bar.value = 0.6
+cmd(sh[2], 'CSD', '500')
+check(abs(bar.value - 0.1) < 1e-6, 'pushback sets it back')
+cmd(sh[2], 'CSG', '118')
+check(not bar.casting and bar.fadeOut == 1 and bar._barColour[2] == 1.0, 'the cast going off finishes it green')
+cmd(sh[2], 'SPE', '118,1500')
+cmd(sh[2], 'CSF', '118,40')
+check(not bar.casting and g.CastingBarFrameText._text == 'Interrupted' and bar._barColour[1] == 1.0 and bar._barColour[2] == 0.0,
+      'an interrupt shows Interrupted in red')
+cmd(sh[2], 'CHS', '5143,5000')
+check(bar.channeling == 1 and abs(bar.value - 5.0) < 1e-6 and g.CastingBarFrameText._text == 'Arcane Missiles', 'a channel runs the bar down')
+cmd(sh[2], 'CHU', '2500')
+check(abs(bar.value - 2.5) < 1e-6, 'a channel update moves it')
+cmd(sh[2], 'CHU', '0')
+check(not bar.channeling and bar.fadeOut == 1, 'the channel ending finishes it')
+cmd(sh[3], 'SPE', '47486,2000')
+check(not bar.casting, "someone else's cast leaves your bar alone")
 
 # learn/unlearn spam is filtered while spectating
 f = g.MOCK.chatFilters['CHAT_MSG_SYSTEM']
@@ -189,10 +231,12 @@ g.MOCK.following = None
 g.MOCK.moved = True
 g.MOCK.update(0.1)
 check(not g.CenturionReplaySpectate_IsActive(), 'moving ends spectating')
-check(any('SPECTATE OFF' in s for s in sent_since(mark)), 'the server is told to give the bars back')
+check(any('SPECTATE OFF LAND' in s for s in sent_since(mark)), 'the server is told to give the bars back and land you on them')
 check(not uiparent_shown(), 'the UI goes back the way the replay had it')
 check(all(g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames come back')
 check(not g.CenturionReplaySpectateStatus._shown, 'the status line goes')
+check(g.PlayerFrame.unit == 'player' and g.MOCK.focus is None and g.FocusFrame._alpha == 1, 'your own player frame and focus come back')
+check(list(g.MOCK.squadLines.values())[-1] == 'SQ:-', 'the enemy frames are put away')
 check(g.MOCK.cvars['Sound_ListenerAtCharacter'] == '1', 'the sound goes back to your own setting')
 check(f(None, 'CHAT_MSG_SYSTEM', 'You have unlearned Polymorph.') is True, '"unlearned" lines just after are hidden too')
 
@@ -200,14 +244,31 @@ check(f(None, 'CHAT_MSG_SYSTEM', 'You have unlearned Polymorph.') is True, '"unl
 frame = g.ATPlayers[sh[4]].fsmall.main
 frame._scripts.OnClick(frame, 'RightButton')
 check(g.MOCK.following == sh[4], "right-clicking a player's arena frame spectates them")
+mark = len(sent_since(0))
 g.CenturionReplaySpectate_Stop()
 check(g.MOCK.following is None, 'the Spectate button / X stops it')
+check(any('SPECTATE OFF' in v for v in sent_since(mark)) and not any('LAND' in v for v in sent_since(mark)), 'the Spectate button does not move you')
 
 # logging out while spectating leaves the setting as it was
 g.CenturionReplaySpectate_Start(sh[2])
 g.MOCK.fire('PLAYER_LOGOUT')
 check(g.MOCK.cvars['Sound_ListenerAtCharacter'] == '1', 'logging out spectating saves your own sound setting, not ours')
 g.CenturionReplaySpectate_Stop()
+
+# the scoreboard any time in a replay
+check(not uiparent_shown(), 'the replay starts with the UI hidden')
+asked = g.MOCK.scoreRequests
+g.ToggleWorldStateScoreFrame()
+check(g.WorldStateScoreFrame._shown and g.MOCK.scoreRequests == asked + 1, 'the scoreboard key opens the board mid-replay and asks the server')
+check(uiparent_shown(), 'and shows the UI it lives in')
+g.MOCK.update(1.0)
+g.MOCK.update(1.1)
+check(g.MOCK.scoreRequests == asked + 2, 'the open board keeps asking')
+g.ToggleWorldStateScoreFrame()
+check(not g.WorldStateScoreFrame._shown and not uiparent_shown(), 'closing it hides the UI again')
+g.CenturionReplayScore_Toggle()
+check(g.WorldStateScoreFrame._shown, 'the Scoreboard button opens it')
+g.CenturionReplayScore_Toggle()
 
 # restart resumes
 g.CenturionReplaySpectate_Start(sh[2])
@@ -222,6 +283,9 @@ g.MOCK.fire('PLAYER_ENTERING_WORLD')
 g.MOCK.update(0.6)
 check(g.MOCK.following is None and not g.CenturionReplaySpectate_IsActive(), 'leaving the replay ends spectating')
 check(g.MOCK.armed is False, 'and right-click is a normal right-click again')
+stock = g.MOCK.stockToggle or 0
+g.ToggleWorldStateScoreFrame()
+check((g.MOCK.stockToggle or 0) == stock + 1 and not g.WorldStateScoreFrame._shown, 'outside a replay the scoreboard key is the stock one')
 
 print()
 print('FAILURES: %d' % len(failures))
