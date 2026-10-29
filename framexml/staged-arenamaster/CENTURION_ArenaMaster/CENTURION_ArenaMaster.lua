@@ -933,6 +933,10 @@ local footY = AH - 34
 local status = area:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 status:SetPoint("LEFT", area, "TOPLEFT", 16, -(footY + 11))
 status:SetJustifyH("LEFT")
+status:SetJustifyV("MIDDLE")
+-- Two lines tall: with three buttons beside it, a long line wraps rather than
+-- running under them (SetFootButtons gives it the width they leave).
+status:SetHeight(26)
 
 local FOOT_BUTTONS = 3
 local footButtons = {}
@@ -972,6 +976,9 @@ local function SetFootButtons(list)
 			b:Hide()
 		end
 	end
+	-- The status line has what the buttons leave (owner: "the Only your group
+	-- leader can queue ... is cut off by the buttons").
+	status:SetWidth(math.max(80, right - 20))
 end
 
 ------------------------------------------------------------------

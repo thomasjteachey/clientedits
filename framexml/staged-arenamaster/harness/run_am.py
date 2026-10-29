@@ -216,6 +216,11 @@ open_master()
 pick('Standard')
 check('Only your group leader can queue the group.' in visible_texts(), 'not the leader: says so')
 check(not enabled(button_labelled('Join Rated')), 'and rated is greyed')
+status_text = [o for o in mock.objects.values() if o._kind == 'FontString' and o._text == 'Only your group leader can queue the group.'][0]
+first_button = button_labelled('Join Rated')
+check(status_text._w is not None and 16 + status_text._w <= first_button._points[1].x - 4,
+      'the status line ends before the first of three buttons')
+dump('2b_standard_not_leader')
 mock.leader = True
 am.Hide(am)
 
