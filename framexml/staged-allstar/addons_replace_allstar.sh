@@ -5,7 +5,7 @@
 # twin of addons_add_allstar.sh. Refuses if the folder is not in the zip yet,
 # or if both staged files are already what the zip holds.
 set -e
-TAG=allstar-slots
+TAG=allstar-panel
 P=/var/www/html/downloads/patches
 W=~/allstar-20261028/client
 D=CENTURION_AllStar

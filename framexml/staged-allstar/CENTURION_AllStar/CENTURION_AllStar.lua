@@ -142,24 +142,131 @@ end
 GuardBindingWindow()
 
 -- Lives ---------------------------------------------------------------------
--- ALLSTAR:LIVES:<left>:<total>: the player's own lives, under the arena's
--- team counters (which count each team's lives). Put away outside an arena.
+-- ALLSTAR:LIVES:<left>:<total>:<class>:<name>: the player's own lives and the
+-- life being played, under the arena's team counters (which count each
+-- team's lives):
+--
+--     [class icon]  9/9  Tijuana          (the name in its class colour)
+--                   ■■■■■■■■■             (a pip a life; spent ones go dark)
+--
+-- A life lost flashes it red. Put away outside an arena.
+local CLASS_TOKEN = { "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST", "DEATHKNIGHT", "SHAMAN", "MAGE", "WARLOCK", nil, "DRUID" }
+local PIP_W, PIP_H, PIP_GAP = 14, 5, 3
+local SOLID = "Interface\\Buttons\\WHITE8X8"
+
 local livesFrame = CreateFrame("Frame", "CenturionAllStarLives", UIParent)
-livesFrame:SetWidth(240)
-livesFrame:SetHeight(22)
-livesFrame:SetPoint("TOP", UIParent, "TOP", 0, -80)
-local livesText = livesFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-livesText:SetPoint("CENTER", livesFrame, "CENTER", 0, 0)
+livesFrame:SetHeight(50)
+livesFrame:SetWidth(200)
+livesFrame:SetPoint("TOP", UIParent, "TOP", 0, -78)
+livesFrame:SetBackdrop({
+	bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+	edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+	tile = true, tileSize = 16, edgeSize = 14,
+	insets = { left = 4, right = 4, top = 4, bottom = 4 },
+})
+livesFrame:SetBackdropColor(0.03, 0.03, 0.05, 0.82)
 livesFrame:Hide()
 
-local function ShowLives(left, total)
-	if ( left > 0 ) then
-		livesText:SetText(string.format("Your lives: %d of %d", left, total))
-		livesText:SetTextColor(1.0, 0.82, 0.0)
-	else
-		livesText:SetText("You are out of lives")
-		livesText:SetTextColor(1.0, 0.25, 0.25)
+local livesIcon = livesFrame:CreateTexture(nil, "ARTWORK")
+livesIcon:SetWidth(32)
+livesIcon:SetHeight(32)
+livesIcon:SetPoint("LEFT", livesFrame, "LEFT", 10, 0)
+livesIcon:SetTexture("Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes")
+
+local livesCount = livesFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+livesCount:SetPoint("TOPLEFT", livesIcon, "TOPRIGHT", 9, 2)
+local livesName = livesFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+livesName:SetPoint("BOTTOMLEFT", livesCount, "BOTTOMRIGHT", 8, 1)
+
+local livesPips = {}
+local function LivesPip(i)
+	local pip = livesPips[i]
+	if ( not pip ) then
+		pip = livesFrame:CreateTexture(nil, "ARTWORK")
+		pip:SetTexture(SOLID)
+		pip:SetWidth(PIP_W)
+		pip:SetHeight(PIP_H)
+		pip:SetPoint("BOTTOMLEFT", livesIcon, "BOTTOMRIGHT", 9 + (i - 1) * (PIP_W + PIP_GAP), -1)
+		livesPips[i] = pip
 	end
+	return pip
+end
+
+-- The red wash a lost life flashes.
+local livesFlash = livesFrame:CreateTexture(nil, "OVERLAY")
+livesFlash:SetTexture(SOLID)
+livesFlash:SetPoint("TOPLEFT", livesFrame, "TOPLEFT", 4, -4)
+livesFlash:SetPoint("BOTTOMRIGHT", livesFrame, "BOTTOMRIGHT", -4, 4)
+livesFlash:SetVertexColor(1.0, 0.1, 0.1)
+livesFlash:SetBlendMode("ADD")
+livesFlash:SetAlpha(0)
+local livesFlashAnim = livesFlash:CreateAnimationGroup()
+do
+	local up = livesFlashAnim:CreateAnimation("Alpha")
+	up:SetChange(0.55)
+	up:SetDuration(0.12)
+	up:SetOrder(1)
+	local down = livesFlashAnim:CreateAnimation("Alpha")
+	down:SetChange(-0.55)
+	down:SetDuration(0.6)
+	down:SetOrder(2)
+end
+
+local livesShownLeft
+
+local function ShowLives(left, total, classId, name)
+	local token = CLASS_TOKEN[classId or 0]
+	local colour = token and RAID_CLASS_COLORS and RAID_CLASS_COLORS[token]
+	local r, g, b = 1.0, 0.82, 0.0
+	if ( colour ) then
+		r, g, b = colour.r, colour.g, colour.b
+	end
+
+	local coords = token and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[token]
+	if ( coords ) then
+		livesIcon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+		livesIcon:Show()
+	else
+		livesIcon:Hide()
+	end
+
+	if ( left > 0 ) then
+		livesCount:SetText(string.format("|cffffffff%d|r|cff8a8a8a/%d|r", left, total))
+		livesName:SetText(name ~= "" and name or UnitName("player"))
+		livesName:SetTextColor(r, g, b)
+		livesFrame:SetBackdropBorderColor(r, g, b, 0.9)
+		livesIcon:SetDesaturated(nil)
+	else
+		livesCount:SetText(string.format("|cffff4040%d|r|cff8a8a8a/%d|r", left, total))
+		livesName:SetText("Out of lives")
+		livesName:SetTextColor(0.6, 0.6, 0.6)
+		livesFrame:SetBackdropBorderColor(0.45, 0.45, 0.45, 0.9)
+		livesIcon:SetDesaturated(1)
+	end
+
+	for i = 1, math.max(total, #livesPips) do
+		local pip = LivesPip(i)
+		if ( i > total ) then
+			pip:Hide()
+		else
+			if ( i <= left ) then
+				pip:SetVertexColor(r, g, b, 1)
+			else
+				pip:SetVertexColor(0.22, 0.22, 0.22, 0.9)
+			end
+			pip:Show()
+		end
+	end
+
+	local text = livesCount:GetStringWidth() + 8 + livesName:GetStringWidth()
+	local pips = total * (PIP_W + PIP_GAP) - PIP_GAP
+	livesFrame:SetWidth(10 + 32 + 9 + math.max(text, pips) + 14)
+
+	if ( livesShownLeft and left < livesShownLeft ) then
+		livesFlashAnim:Stop()
+		livesFlashAnim:Play()
+	end
+	livesShownLeft = left
 	livesFrame:Show()
 end
 
@@ -425,9 +532,11 @@ listener:SetScript("OnEvent", function(self, event, prefix, message)
 	elseif ( string.sub(message, 1, 12) == "ALLSTAR:MAC:" ) then
 		OnMacroLine(string.sub(message, 13))
 	else
-		local left, total = string.match(message, "^ALLSTAR:LIVES:(%d+):(%d+)$")
+		-- An older server sends the two numbers alone.
+		local left, total, rest = string.match(message, "^ALLSTAR:LIVES:(%d+):(%d+):?(.*)$")
 		if ( left and not OutsideArena() ) then
-			ShowLives(tonumber(left), tonumber(total))
+			local classId, name = string.match(rest or "", "^(%d+):(.*)$")
+			ShowLives(tonumber(left), tonumber(total), tonumber(classId), name or "")
 		end
 	end
 end)
