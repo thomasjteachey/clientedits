@@ -503,9 +503,53 @@ bool NameTag_Enabled()
 static int WantedMarker(void* tag, void* unit);
 static int WantedTint(void* tag, void* unit);
 
+// THE CLASS FAMILY. 0x008007A0(class) stores the ChrClasses SpellClassSet of a
+// class at [0x00D397B4], and its only caller (0x006E81E3) runs it once, when
+// the active player is created at world entry. CanNoReagentCast (0x00800D60)
+// waives a reagent only for a spell of that family whose class mask meets
+// PLAYER_NO_REAGENT_COST, so a character whose class changes in world - the
+// realm's All-Star arena puts another character's class on the player - was
+// still asked for Blinding Powder and Flash Powder with the mask full.
+// Followed here instead: when the active player's class byte ([unit+0xD0]
+// +0x45, what that caller reads) differs from the one last stored, the
+// client's own setter runs again. Checked a few times a second at most.
+static const DWORD kSetClassFamily     = 0x008007A0;
+static const BYTE  kSetClassFamilySig[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08, 0x8B, 0x0D, 0x14, 0x34, 0xAD, 0x00 };
+typedef void (__cdecl* SetClassFamily_t)(DWORD classId);
+static int   g_classFamilyOk = 0;
+static int   g_classFamilyFor = -1;
+static DWORD g_classFamilyCheckedAt = 0;
+
+static void FollowClassFamily()
+{
+    if (!g_classFamilyOk || !g_activeOk)
+        return;
+    DWORD const now = GetTickCount();
+    if (now - g_classFamilyCheckedAt < 250)
+        return;
+    g_classFamilyCheckedAt = now;
+
+    unsigned __int64 const guid = ((GetActiveGuid_t)kGetActiveGuid)();
+    if (!guid)
+        return;
+    BYTE* me = (BYTE*)((ObjectPtr_t)kObjectPtr)((DWORD)guid, (DWORD)(guid >> 32), 1, "nametag.cpp", 0);
+    if (!me || !Readable(me + 0xD0, 4))
+        return;
+    BYTE* fields = *(BYTE**)(me + 0xD0);
+    if (!fields || !Readable(fields + 0x45, 1))
+        return;
+    int const playerClass = fields[0x45];
+    if (playerClass == g_classFamilyFor)
+        return;
+    g_classFamilyFor = playerClass;
+    ((SetClassFamily_t)kSetClassFamily)(DWORD(playerClass));
+    Log("class family now that of class %d", playerClass);
+}
+
 extern "C" void __cdecl NameTagProbe(void* tag)
 {
     EnsureCVar();
+    FollowClassFamily();
 
     if (!Readable(tag, 0x20)) return;
 
@@ -1058,6 +1102,7 @@ void NameTag_Install()
     // The squad tint is its own hook too, and leans on the probe above to
     // re-dirty a tag whose squad flag arrived after it was built.
     g_activeOk = VerifySig(kGetActiveGuid, kGetActiveSig, sizeof(kGetActiveSig), "GetActivePlayerGuid");
+    g_classFamilyOk = VerifySig(kSetClassFamily, kSetClassFamilySig, sizeof(kSetClassFamilySig), "class family setter");
     g_arenaGlobalsOk = Readable((void*)kArenaMapType, 4) && Readable((void*)kMyArenaFaction, 1);
     if ((g_tintPercent > 0 || g_lobbyTintOn || g_allyGreenOn) &&
         VerifySig(kColourSite, kColourSig, sizeof(kColourSig), "name tag colour") &&
