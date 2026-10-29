@@ -232,12 +232,16 @@ am:SetPoint("CENTER", UIParent, "CENTER", 0, -20)
 am:SetFrameStrata("MEDIUM")
 am:SetToplevel(true)
 am:EnableMouse(true)
+-- The bounty board's TutorialFrameBackground is black at 60% alpha, so the
+-- world showed through the list column (owner: "get rid of the transparency,
+-- it looks ugly"): the same black, solid.
 am:SetBackdrop({
-	bgFile   = "Interface\\TutorialFrame\\TutorialFrameBackground",
+	bgFile   = "Interface\\Buttons\\WHITE8X8",
 	edgeFile = "Interface\\AchievementFrame\\UI-Achievement-WoodBorder",
 	tile = true, tileSize = 32, edgeSize = 64,
 	insets = { left = 16, right = 16, top = 16, bottom = 16 },
 })
+am:SetBackdropColor(0, 0, 0, 1)
 am:Hide()
 tinsert(UISpecialFrames, "CenturionArenaMaster")
 

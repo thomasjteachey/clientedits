@@ -10,6 +10,10 @@ for _, name in ipairs({ "SetSpacing", "LockHighlight", "UnlockHighlight", "SetFo
 	Region[name] = function() end
 end
 
+function Region:SetBackdropColor(r, g, b, a)
+	self._backdropColor = { r, g, b, a or 1 }
+end
+
 function Region:SetChecked(c)
 	self._checked = c and true or false
 	if self._checkTex then

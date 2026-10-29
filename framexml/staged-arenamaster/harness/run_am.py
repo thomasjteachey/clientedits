@@ -106,6 +106,9 @@ def dump(name, hover=None):
             rec['backdrop'] = {'bgFile': bd.bgFile, 'edgeFile': bd.edgeFile, 'tileSize': bd.tileSize,
                                'edgeSize': bd.edgeSize,
                                'insets': [bd.insets.left, bd.insets.right, bd.insets.top, bd.insets.bottom]}
+            bc = o._backdropColor
+            if bc is not None:
+                rec['backdrop']['colour'] = [bc[i] for i in range(1, 5)]
         objs[k] = rec
     extra = [g.DropDownList1._id] if g.DropDownList1._shown else []
     dumps[name] = {'root': am._id, 'uiparent': g.UIParent._id, 'objects': objs, 'extra': extra, 'hover': hover}

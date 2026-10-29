@@ -280,6 +280,11 @@ def draw_backdrop(o):
     il, ir, it, ib = bd['insets']
     if bd.get('bgFile'):
         tile = texture(bd['bgFile'])
+        if bd.get('colour'):
+            # SetBackdropColor multiplies the tile, alpha included
+            c = bd['colour']
+            ch = tile.split()
+            tile = Image.merge('RGBA', tuple(ch[i].point(lambda v, k=c[i]: v * k) for i in range(4)))
         ts = bd.get('tileSize') or 32
         x0, y0, x1, y1 = to_px(l + il, b + ib, r - ir, t - it)
         tt = tile.resize((int(ts * S), int(ts * S)))
