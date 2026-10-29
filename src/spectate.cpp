@@ -57,6 +57,11 @@
 //               watched unit's while following, so Blizzard_CombatText shows
 //               what they take.
 //   Full notes: docs/DAMAGE_TEXT_RE.md.
+//   0x00524BF0  CGGameUI::Target(guidLo, guidHi), cdecl - where TargetUnit
+//               (0x00525A30 -> 0x005259E0) and a left-click end up; 0 clears
+//               (the target guid is at 0x00BD07B0). Like SetFocus it refuses
+//               while an addon's taint is on the running Lua (test at
+//               0x00524C6F, then 0x00513530), so it is called the same way.
 //
 // The Lua function is registered as a 5-byte jmp in int3 padding inside .text
 // (Lua will not call a function outside it, gluebridge.cpp): 0x00569904, in the
@@ -72,7 +77,7 @@
 
 static char  g_dir[MAX_PATH] = { 0 };
 static int   g_enabled = 1;          // [Spectate] Enabled
-static int   g_ready = 0;            // 1 camera + Lua, 2 right-click, 4 focus, 8 damage text
+static int   g_ready = 0;            // 1 camera + Lua, 2 right-click, 4 focus, 8 damage text, 16 target
 static int   g_faults = 0;
 
 static volatile LONG g_on = 0;       // a unit to keep the camera on
@@ -110,6 +115,14 @@ typedef void (__cdecl* SetFocus_t)(DWORD* guid);
 static int   g_focusBorrowed = 0;
 static DWORD g_savedFocus[2] = { 0, 0 };
 
+static const DWORD kSetTarget = 0x00524BF0;
+static const BYTE  kSetTargetSig[] = { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xAC, 0x02, 0x00, 0x00, 0x53, 0x8B, 0x5D, 0x08, 0x56, 0x8B, 0x75, 0x0C };
+static const DWORD kSetTargetTaintTest = 0x00524C6F;   // cmp dword ptr [0x00D4139C], 0
+typedef void (__cdecl* SetTarget_t)(DWORD lo, DWORD hi);
+#define kTargetGuid ((DWORD*)0x00BD07B0)
+static int   g_targetBorrowed = 0;
+static DWORD g_savedTarget[2] = { 0, 0 };
+
 // SetFocus as Blizzard's own code would call it: with no addon's taint on the
 // running Lua (the focus-changed handlers it fires run clean too).
 static void SetFocusUntainted(DWORD lo, DWORD hi)
@@ -119,6 +132,17 @@ static void SetFocusUntainted(DWORD lo, DWORD hi)
     kLuaTaint = 0;
     __try {
         ((SetFocus_t)kSetFocus)(guid);
+    } __finally {
+        kLuaTaint = taint;
+    }
+}
+
+static void SetTargetUntainted(DWORD lo, DWORD hi)
+{
+    DWORD const taint = kLuaTaint;
+    kLuaTaint = 0;
+    __try {
+        ((SetTarget_t)kSetTarget)(lo, hi);
     } __finally {
         kLuaTaint = taint;
     }
@@ -646,9 +670,10 @@ static int Spectate(void* L)
     // 2: knows "focus" and lands the camera after a movement key.
     // 3: the focus is set without the addon's taint (2's was always refused).
     // 4: the watched player's damage numbers and combat text.
+    // 5: "target".
     if (arg && !_stricmp(arg, "version"))
     {
-        pLuaPushNumber(L, 4.0);
+        pLuaPushNumber(L, 5.0);
         return 1;
     }
 
@@ -680,6 +705,41 @@ static int Spectate(void* L)
         }
         if (kFocusGuid[0] || kFocusGuid[1])
             PushGuid(L, kFocusGuid[0], kFocusGuid[1]);
+        else
+            pLuaPushNil(L);
+        return 1;
+    }
+    // "target", "0x<guid>" | "none" | "off": the watched player's target as
+    // yours ("none": they have none), or yours from before back on "off".
+    // Returns the target now.
+    if (arg && !_stricmp(arg, "target"))
+    {
+        if (!(g_ready & 16))
+        {
+            pLuaPushNil(L);
+            return 1;
+        }
+        const char* what = pLuaToLString(L, 2, NULL);
+        DWORD lo = 0, hi = 0;
+        bool const set = ParseGuid(what, lo, hi);
+        if (set || (what && !_stricmp(what, "none")))
+        {
+            if (!g_targetBorrowed)
+            {
+                g_savedTarget[0] = kTargetGuid[0];
+                g_savedTarget[1] = kTargetGuid[1];
+                g_targetBorrowed = 1;
+            }
+            if (kTargetGuid[0] != lo || kTargetGuid[1] != hi)
+                SetTargetUntainted(lo, hi);
+        }
+        else if (g_targetBorrowed)
+        {
+            g_targetBorrowed = 0;
+            SetTargetUntainted(g_savedTarget[0], g_savedTarget[1]);
+        }
+        if (kTargetGuid[0] || kTargetGuid[1])
+            PushGuid(L, kTargetGuid[0], kTargetGuid[1]);
         else
             pLuaPushNil(L);
         return 1;
@@ -736,6 +796,7 @@ void Spectate_WorldLuaReady()
     InterlockedExchange(&g_landing, 0);
     g_lockCamera = NULL;
     g_focusBorrowed = 0;               // the old world's focus is gone with it
+    g_targetBorrowed = 0;              // and its target
     if (g_ctBorrowed)                  // the combat text back on the player
     {
         g_ctBorrowed = 0;
@@ -795,10 +856,15 @@ void Spectate_Install()
         }
         g_ready |= 8;
     }
+    // The target, called the same way.
+    if (SigOk(kSetTarget, kSetTargetSig, sizeof(kSetTargetSig), "SetTarget") &&
+        SigOk(kSetTargetTaintTest, kSetFocusTaintSig, sizeof(kSetFocusTaintSig), "SetTarget taint test"))
+        g_ready |= 16;
     // The focus is only called, never patched.
     if (SigOk(kSetFocus, kSetFocusSig, sizeof(kSetFocusSig), "SetFocus") &&
         SigOk(kSetFocusTaintTest, kSetFocusTaintSig, sizeof(kSetFocusTaintSig), "SetFocus taint test"))
         g_ready |= 4;
-    Log("installed (normal camera + yaw lock, right-click %s, focus %s, damage text %s)",
-        (g_ready & 2) ? "on" : "OFF", (g_ready & 4) ? "on" : "OFF", (g_ready & 8) ? "on" : "OFF");
+    Log("installed (normal camera + yaw lock, right-click %s, focus %s, damage text %s, target %s)",
+        (g_ready & 2) ? "on" : "OFF", (g_ready & 4) ? "on" : "OFF", (g_ready & 8) ? "on" : "OFF",
+        (g_ready & 16) ? "on" : "OFF");
 }

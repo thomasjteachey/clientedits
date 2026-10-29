@@ -21,9 +21,14 @@
 //                                              "spectate them" (not interact)
 //   guid = CenturionSpectate("click")         the player last right-clicked while
 //                                              armed, once, else nil
-//   v = CenturionSpectate("version")          4 (older DLLs answer nil: they took
+//   v = CenturionSpectate("version")          5 (older DLLs answer nil: they took
 //                                              any other word for "off"; 3 has
-//                                              the focus, 4 the damage numbers)
+//                                              the focus, 4 the damage numbers,
+//                                              5 the target)
+//   guid = CenturionSpectate("target", "0xGUID" | "none" | "off")
+//                                              your target set to that unit (or
+//                                              none), or the one before back;
+//                                              returns the target now (v5)
 //   guid = CenturionSpectate("focus", "0xGUID" | "off")
 //                                              make that unit the focus (FocusUnit
 //                                              is protected in Lua), or put back

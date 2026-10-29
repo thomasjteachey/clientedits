@@ -156,6 +156,16 @@ check(g.CenturionReplaySpectateStatus is None, 'no status line: spectating says 
 check(g.PlayerFrame.unit == 'focus' and g.MOCK.focus == sh[2] and g.PlayerLevelText._text in ('80', 80),
       'your player frame shows them (through the focus)')
 check(g.FocusFrame._alpha == 0, 'the focus frame does not show them twice')
+g.MOCK.target = '0x00000000000000AA'
+g.MOCK.focusTarget = sh[4]
+g.MOCK.fire('UNIT_TARGET', 'focus')
+check(g.MOCK.target == sh[4], 'your target frame shows their target: %s' % g.MOCK.target)
+g.MOCK.focusTarget = None
+g.MOCK.update(0.3)
+check(g.MOCK.target is None, 'and nothing when they target nothing')
+g.MOCK.focusTarget = sh[3]
+g.MOCK.update(0.3)
+check(g.MOCK.target == sh[3], 'and follows them on the tick too')
 g.Recount.ShowReset(g.Recount)
 check(not g.MOCK.recountAsked, 'Recount does not ask to reset for their party')
 f = g.MOCK.chatFilters['CHAT_MSG_SYSTEM']
@@ -183,6 +193,13 @@ b._scripts.PostClick(b, 'RightButton')
 check(g.MOCK.following == sh[3] and g.MOCK.focus == sh[3], 'a right-click on an enemy frame spectates that player: %s' % g.MOCK.following)
 g.CenturionReplaySpectate_Start(sh[2])
 check(g.MOCK.following == sh[2], 'and back')
+g.MOCK.party[1] = sh[1].lower()
+pf = g.PartyMemberFrame1
+pf._scripts.PostClick(pf, 'RightButton')
+check(g.MOCK.following == sh[1] and (g.MOCK.menusClosed or 0) > 0, 'a right-click on a party frame spectates that teammate (no party menu): %s' % g.MOCK.following)
+pf._scripts.PostClick(pf, 'LeftButton')
+check(g.MOCK.following == sh[1], 'a left-click on it is just a target')
+g.CenturionReplaySpectate_Start(sh[2])
 
 # the echo of our own whisper does not break the feed parser
 msg('SPECTATE ' + sh[2])
@@ -248,6 +265,7 @@ check(any('SPECTATE OFF LAND' in s for s in sent_since(mark)), 'the server is to
 check(not uiparent_shown(), 'the UI goes back the way the replay had it')
 check(all(g.ATPlayers[gd].fsmall.main._shown for gd in sh), 'arena frames come back')
 check(g.PlayerFrame.unit == 'player' and g.MOCK.focus is None and g.FocusFrame._alpha == 1, 'your own player frame and focus come back')
+check(g.MOCK.target is None, 'and the target you had before spectating (none here): %s' % g.MOCK.target)
 check(list(g.MOCK.squadLines.values())[-1] == 'SQ:-', 'the enemy frames are put away')
 check(g.MOCK.cvars['Sound_ListenerAtCharacter'] == '1', 'the sound goes back to your own setting')
 check(f(None, 'CHAT_MSG_SYSTEM', 'You have unlearned Polymorph.') is True, '"unlearned" lines just after are hidden too')
@@ -280,6 +298,18 @@ g.ToggleWorldStateScoreFrame()
 check(not g.WorldStateScoreFrame._shown and not uiparent_shown(), 'closing it hides the UI again')
 g.CenturionReplayScore_Toggle()
 check(g.WorldStateScoreFrame._shown, 'the Scoreboard button opens it')
+check(not g.WorldStateScoreFrameDeaths._shown and not g.WorldStateScoreFrameHK._shown and not g.WorldStateScorePlayerCount._shown,
+      'a replay board drops the battleground columns (Deaths, Honorable Kills, the side count)')
+check(not g.WorldStateScoreFrameHonorGained._shown, 'and with no rounds played, no Rounds Won column')
+g.CenturionReplayScore_Toggle()
+g.MOCK.scores = lua.table(lua.table(name='Shuffler0', faction=0), lua.table(name='Nextlife', faction=1))
+g.ATPlayers[sh[0]].wins = 2
+g.ATPlayers[sh[1]].wins = 1
+g.CenturionReplayScore_Toggle()
+check(g.WorldStateScoreFrameHonorGained._shown and 'Rounds' in (g.WorldStateScoreFrameHonorGainedText._text or '')
+      and g.WorldStateScoreButton1HonorGained._text == '2' and g.WorldStateScoreButton2HonorGained._text == '1',
+      'Buffle Shuffle: a Rounds Won column with each player\'s rounds: %s %s' % (g.WorldStateScoreButton1HonorGained._text, g.WorldStateScoreButton2HonorGained._text))
+check(g.WorldStateScoreButton1FactionLeft._vc[2] > 0.5 and g.WorldStateScoreButton1FactionLeft._vc[1] < 0.3 and g.WorldStateScoreButton2FactionLeft._vc[1] > 0.8, 'rows in the arena green and gold')
 g.CenturionReplayScore_Toggle()
 
 # restart resumes

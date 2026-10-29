@@ -98,7 +98,7 @@ function GameTooltip:Hide() end
 -- The DLL's follow camera.
 MOCK.spectateLog = {}
 function CenturionSpectate(arg, n)
-	if arg ~= "?" and arg ~= "arm" and arg ~= "click" and arg ~= "version" and arg ~= "focus" then
+	if arg ~= "?" and arg ~= "arm" and arg ~= "click" and arg ~= "version" and arg ~= "focus" and arg ~= "target" then
 		table.insert(MOCK.spectateLog, tostring(arg) .. (n and (" " .. tostring(n)) or ""))
 	end
 	if arg == "?" then
@@ -113,7 +113,16 @@ function CenturionSpectate(arg, n)
 		MOCK.armed = false
 		return 0
 	elseif arg == "version" then
-		return MOCK.dllVersion or 3
+		return MOCK.dllVersion or 5
+	elseif arg == "target" then
+		if type(n) == "string" and (n:sub(1, 2) == "0x" or n == "none") then
+			if MOCK.savedTarget == nil then MOCK.savedTarget = MOCK.target or "none" end
+			MOCK.target = (n ~= "none") and n or nil
+		elseif MOCK.savedTarget ~= nil then
+			MOCK.target = MOCK.savedTarget ~= "none" and MOCK.savedTarget or nil
+			MOCK.savedTarget = nil
+		end
+		return MOCK.target
 	elseif arg == "focus" then
 		if type(n) == "string" and n:sub(1, 2) == "0x" then
 			MOCK.savedFocus = MOCK.savedFocus or MOCK.focus or "none"
@@ -186,6 +195,43 @@ WorldStateScoreFrame = CreateFrame("Frame", "WorldStateScoreFrame", UIParent)
 WorldStateScoreFrame:Hide()
 function ShowUIPanel(f) f:Show() end
 function HideUIPanel(f) f:Hide() end
+-- The scoreboard's columns and rows (WorldStateFrame.xml names), for the replay layout.
+MAX_WORLDSTATE_SCORE_BUTTONS = 3
+WORLDSTATESCOREFRAME_PADDING = 35
+WORLDSTATESCOREFRAME_COLUMN_SPACING = 76
+for _, n in ipairs({ "Tab1", "Tab2", "Tab3", "Team", "TeamSkill", "Deaths", "HK", "KB", "DamageDone", "HealingDone", "HonorGained", "Name", "Class" }) do
+	local f = CreateFrame("Button", "WorldStateScoreFrame" .. n, WorldStateScoreFrame)
+	f:Show()
+	f._w = (n == "Name" and 88) or (n == "Class" and 24) or 50
+end
+WorldStateScoreFrameHonorGainedText = WorldStateScoreFrameHonorGained:CreateFontString("WorldStateScoreFrameHonorGainedText", "OVERLAY")
+function Region:GetWidth() return self._w or 0 end
+WorldStateScorePlayerCount = WorldStateScoreFrame:CreateFontString("WorldStateScorePlayerCount", "OVERLAY")
+WorldStateScoreScrollFrame = CreateFrame("Frame", "WorldStateScoreScrollFrame", WorldStateScoreFrame)
+WorldStateScoreScrollFrame:Hide()
+for i = 1, 3 do
+	local row = CreateFrame("Button", "WorldStateScoreButton" .. i, WorldStateScoreFrame)
+	CreateFrame("Button", "WorldStateScoreButton" .. i .. "Name", row)
+	for _, part in ipairs({ "NameText", "HonorableKills", "Deaths", "Team", "TeamSkill", "HonorGained" }) do
+		local f = row:CreateFontString("WorldStateScoreButton" .. i .. part, "OVERLAY")
+		f:Show()
+	end
+	for _, part in ipairs({ "FactionLeft", "FactionRight" }) do
+		row:CreateTexture("WorldStateScoreButton" .. i .. part, "ARTWORK")
+	end
+end
+function Region:SetVertexColor(r, g, b) self._vc = { r, g, b } end
+MOCK.scores = {}
+function GetNumBattlefieldScores() return #MOCK.scores end
+function GetBattlefieldScore(i) local r = MOCK.scores[i]; return r.name, 0, 0, 0, 0, r.faction end
+function GetNumBattlefieldStats() return 0 end
+function FauxScrollFrame_GetOffset() return 0 end
+function IsActiveBattlefieldArena() return nil end
+function WorldStateScoreFrame_Update()
+	for i = 1, #MOCK.scores do _G["WorldStateScoreButton" .. i .. "Name"].name = MOCK.scores[i].name end
+	WorldStateScorePlayerCount:Show()
+end
+function WorldStateScoreFrame_Resize(width) MOCK.boardWidth = width or 999 end
 MOCK.scoreRequests = 0
 function RequestBattlefieldScoreData() MOCK.scoreRequests = MOCK.scoreRequests + 1 end
 function ToggleWorldStateScoreFrame()
@@ -204,7 +250,12 @@ function Region:EnableMouse(on) self._mouse = on end
 function Region:SetAlpha(a) self._alpha = a end
 function UnitFrame_SetUnit(frame, unit, hb, mb) frame.unit = unit; hb.unit = unit; if mb then mb.unit = unit end end
 function UnitLevel(unit) if unit == "focus" then return 80 end return 1 end
-function UnitGUID(unit) if unit == "focus" then return MOCK.focus end return nil end
+MOCK.party = {}
+function UnitGUID(unit) if unit == "focus" then return MOCK.focus end
+	if unit == "focustarget" then return MOCK.focusTarget end
+	local n = type(unit) == "string" and tonumber(unit:match("^party(%d)$")) if n then return MOCK.party[n] end return nil end
+for i = 1, 4 do local f = CreateFrame("Button", "PartyMemberFrame" .. i, UIParent); f.unit = "party" .. i end
+function CloseDropDownMenus() MOCK.menusClosed = (MOCK.menusClosed or 0) + 1 end
 function InCombatLockdown() return MOCK.combat end
 CENTURION_SQUAD_NAMES = { [0] = "Gold Team", [1] = "Green Team", [2] = "Blue Team", [3] = "Purple Team" }
 MOCK.squadLines = {}

@@ -20,8 +20,9 @@
 --     an All-Star life swaps bars; "SPECTATE OFF" puts yours back. Your saved
 --     bars are never touched. It also lists their teammates as your party, so
 --     the party frames are theirs.
---   * frames: your player frame shows them (through the focus) and the enemy
---     frames show their enemies (CenturionSquadFrames, fed from the replay).
+--   * frames: your player frame shows them (through the focus), your target
+--     frame their target, and the enemy frames their enemies
+--     (CenturionSquadFrames, fed from the replay).
 ------------------------------------------------------------------------------
 
 local active = false
@@ -364,6 +365,7 @@ end
 -- for "stop following"). Asked while not following, where an older DLL does
 -- nothing with it.
 local FOCUS_DLL = 3
+local TARGET_DLL = 5
 local dllVersion = nil
 
 local function AskDllVersion()
@@ -387,6 +389,38 @@ local function BorrowPlayerFrame(guid)
     UnitFrame_SetUnit(PlayerFrame, "focus", PlayerFrameHealthBar, PlayerFrameManaBar)
     PaintPlayerFrame("focus")
     playerFrameBorrowed = true
+end
+
+-- The target frame shows their target: yours is set to whoever they have
+-- targeted (the focus is them, so "focustarget" is it; TargetUnit is
+-- protected, the DLL sets it), kept up as they change it, and the one you
+-- had comes back after.
+local targetBorrowed = false
+local lastTarget = false
+
+local function FollowTheirTarget()
+    if not playerFrameBorrowed or (dllVersion or 0) < TARGET_DLL or not UnitGUID then
+        return
+    end
+    if not SameGuid(UnitGUID("focus"), followed) then
+        return
+    end
+    local theirs = UnitGUID("focustarget")
+    local key = theirs or "none"
+    if key == lastTarget then
+        return
+    end
+    lastTarget = key
+    targetBorrowed = true
+    CenturionSpectate("target", theirs or "none")
+end
+
+local function ReturnTarget()
+    lastTarget = false
+    if targetBorrowed and CenturionSpectate then
+        targetBorrowed = false
+        CenturionSpectate("target", "off")
+    end
 end
 
 local function ReturnPlayerFrame()
@@ -572,6 +606,43 @@ for squad = 0, 3 do
     end
 end
 
+-- The party frames too: they are the watched player's teammates (the
+-- server's party list), so a right-click spectates that teammate instead of
+-- opening the party menu.
+local function ReplayGuidOf(unit)
+    local guid = UnitGUID and UnitGUID(unit)
+    if not guid or not ATPlayers then
+        return nil
+    end
+    if ATPlayers[guid] then
+        return guid
+    end
+    for key in pairs(ATPlayers) do
+        if SameGuid(key, guid) then
+            return key
+        end
+    end
+    return nil
+end
+
+for index = 1, 4 do
+    local frame = _G["PartyMemberFrame" .. index]
+    if frame and frame.HookScript then
+        frame:HookScript("PostClick", function(self, mouseButton)
+            if mouseButton ~= "RightButton" or not active then
+                return
+            end
+            local guid = ReplayGuidOf(self.unit or ("party" .. index))
+            if guid and CenturionReplaySpectate_Start then
+                if CloseDropDownMenus then
+                    CloseDropDownMenus()
+                end
+                CenturionReplaySpectate_Start(guid)
+            end
+        end)
+    end
+end
+
 -- For CenturionReplayScore.lua: while the scoreboard is open and nobody is
 -- spectated, the same feed with no side of your own (so no enemy frames
 -- either), for the Rounds Won column and the squad colours on the board.
@@ -652,6 +723,8 @@ function CenturionReplaySpectate_Start(guid)
     end
     HideArenaFrames()
     BorrowPlayerFrame(guid)
+    lastTarget = false
+    FollowTheirTarget()
     if scoreOnly then
         FeedStop()                  -- the scoreboard's feed becomes theirs
     end
@@ -674,6 +747,7 @@ local function StopSpectating(stopCamera, tellServer, land)
     end
     ListenerBack()
     CastClear()
+    ReturnTarget()
     ReturnPlayerFrame()
     FeedStop()
     if WorldStateScoreFrame and WorldStateScoreFrame:IsShown() then
@@ -797,6 +871,7 @@ ticker:SetScript("OnUpdate", function(self, elapsed)
             elseif not playerFrameBorrowed then
                 BorrowPlayerFrame(followed)   -- combat had it locked, or the unit was not here yet
             end
+            FollowTheirTarget()
         end
 
         local now = GetTime()
@@ -833,7 +908,14 @@ end)
 local events = CreateFrame("Frame")
 events:RegisterEvent("PLAYER_ENTERING_WORLD")
 events:RegisterEvent("PLAYER_LOGOUT")
-events:SetScript("OnEvent", function(self, event)
+events:RegisterEvent("UNIT_TARGET")
+events:SetScript("OnEvent", function(self, event, unit)
+    if event == "UNIT_TARGET" then
+        if active and unit == "focus" then
+            FollowTheirTarget()
+        end
+        return
+    end
     if event == "PLAYER_LOGOUT" then
         ListenerBack()   -- CVars are saved at logout: never keep the spectate one
         return
