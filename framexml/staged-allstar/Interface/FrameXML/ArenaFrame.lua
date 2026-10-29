@@ -59,7 +59,7 @@ CENTURION_ALL_STAR_ROWS = {
 }
 -- The button past the last practice row; nothing but All-Star shows it.
 local ALL_STAR_EXTRA_ROW = MAX_ARENA_BATTLES + 1
-CENTURION_ALL_STAR_TEXT = "Every time you fall you get back up where you fell as the next level 60 character in your character list - or a starter loadout for a class you have none of - until you have fallen as all nine classes. The last team with lives left wins."
+CENTURION_ALL_STAR_TEXT = "Every time you fall you get back up where you fell as another class: one of your level 60 characters, or a stand-in for a class you have none of, until you have fallen as all nine. The last team with lives left wins."
 -- Picked when the window opens on anything else: the 2v2 row.
 local ALL_STAR_DEFAULT_ROW = MAX_ARENA_TEAMS + 2
 

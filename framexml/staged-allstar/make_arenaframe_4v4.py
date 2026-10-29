@@ -108,8 +108,8 @@ rep('''    -- only practice queues are joinable from this frame (a shuffle's row
 
 rep('''        -- practice 5..8 → 1..4''', '''        -- practice 5..8 → 1..4 (All-Star's fifth row 9 → 5)''')
 
-rep('''CENTURION_ALL_STAR_TEXT = "Every time you fall you are straight back in as the next level 60 character''',
-    '''CENTURION_ALL_STAR_TEXT = "Every time you fall you get back up where you fell as the next level 60 character''')
+rep('''CENTURION_ALL_STAR_TEXT = "Every time you fall you are straight back in as the next level 60 character in your character list - or a starter loadout for a class you have none of - until you have fallen as all nine classes. The last team with lives left wins."''',
+    '''CENTURION_ALL_STAR_TEXT = "Every time you fall you get back up where you fell as another class: one of your level 60 characters, or a stand-in for a class you have none of, until you have fallen as all nine. The last team with lives left wins."''')
 
 out = s.replace('\n', '\r\n').encode('utf-8')
 open(dst, 'wb').write(out)
