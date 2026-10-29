@@ -169,20 +169,27 @@ local function OutsideArena()
 end
 
 -- Macros --------------------------------------------------------------------
--- A bar button can only point at a macro of the character the client plays,
--- so a borrowed character's own macros are made here, as macros of the
--- player's character, for as long as that life lasts, put on the buttons they
--- sat on, and deleted again at the next MAC:RESET (every swap and the restore
--- begin with one):
+-- A bar button can only point at a macro of the character the client plays.
+-- So for one life a borrowed character's own macros take over this
+-- character's macro slots - the ones it has, then new ones up to the game's
+-- 18 - and go on the buttons they sat on. At the next MAC:SWAP (a swap to a
+-- character with macros) or MAC:RESET (one without, and the restore) every
+-- slot gets its own macro back and the new ones are deleted; after a RESET
+-- the server is told (CCGAMEREQ ALLSTAR:MACROS:RESTORED).
+-- A slot keeps its macro id all along, so this character's own bars never
+-- notice. While the macros are borrowed the server keeps this character's
+-- real ones and refuses the client's macro uploads, so a client that goes
+-- away holding the borrowed ones downloads the real ones at its next login.
 --   MAC:B:<buttons>:<icon>:<name>, MAC:L:<line> and MAC:C:<more of the line>,
 --   MAC:E per macro, then MAC:DONE.
--- What was made is remembered per character (CENTURION_AllStarMade), and
--- anything left over - a disconnect mid-match - goes at the next login.
+-- What was written is remembered per character (CENTURION_AllStarMade) and
+-- put back at the next login if a logout came first.
 local MAX_ACCOUNT = MAX_ACCOUNT_MACROS or 36
 local MAX_CHARACTER = MAX_CHARACTER_MACROS or 18
 local macroIncoming = {}
 local macroCurrent
 local macroResetPending = false
+local macroConfirmPending = false
 local macroMakePending
 local iconByTexture
 
@@ -200,39 +207,115 @@ local function MacroIcon(texture)
 	return iconByTexture[string.lower(texture or "")] or 1
 end
 
-local function DeleteMadeMacros()
-	local made = CENTURION_AllStarMade
-	if ( type(made) ~= "table" or #made == 0 ) then
-		return
-	end
+-- The index of this character's macro with that name and text, if any.
+local function CharacterMacroIndex(name, body)
 	local _, numCharacter = GetNumMacros()
-	for index = MAX_ACCOUNT + numCharacter, MAX_ACCOUNT + 1, -1 do
-		local name, _, body = GetMacroInfo(index)
+	for index = MAX_ACCOUNT + 1, MAX_ACCOUNT + numCharacter do
+		local n, _, b = GetMacroInfo(index)
+		if ( n == name and b == body ) then
+			return index
+		end
+	end
+end
+
+-- { written = { { own = {name, icon, body}, now = {name, body} } ... },
+--   created = { {name, body} ... } }
+local function Borrowed()
+	local made = CENTURION_AllStarMade
+	if ( type(made) == "table" and type(made.written) == "table" and type(made.created) == "table" ) then
+		return made
+	end
+	-- addons 1.00131 kept a plain list of the macros it made: delete those.
+	if ( type(made) == "table" ) then
 		for k = #made, 1, -1 do
-			if ( made[k].name == name and made[k].body == body ) then
+			local entry = made[k]
+			local index = type(entry) == "table" and CharacterMacroIndex(entry.name, entry.body)
+			if ( index ) then
 				DeleteMacro(index)
-				table.remove(made, k)
-				break
 			end
 		end
 	end
-	-- Anything not found is gone already.
-	wipe(made)
+	made = { written = {}, created = {} }
+	CENTURION_AllStarMade = made
+	return made
 end
 
-local function MakeMacros(list)
-	if ( type(CENTURION_AllStarMade) ~= "table" ) then
-		CENTURION_AllStarMade = {}
+local function TellServerRestored()
+	local playerName = UnitName("player")
+	if ( SendAddonMessage and playerName ) then
+		SendAddonMessage("CCGAMEREQ", "ALLSTAR:MACROS:RESTORED", "WHISPER", playerName)
 	end
-	for _, macro in ipairs(list) do
-		local _, numCharacter = GetNumMacros()
-		if ( numCharacter >= MAX_CHARACTER ) then
-			break       -- no room: the server's spell stays on those buttons
+end
+
+-- Every slot back to its own macro, the new ones gone. Only a bare RESET is
+-- confirmed to the server: after a SWAP the next character's macros follow,
+-- and a confirmation arriving after the server marked them borrowed would
+-- undo the protection of this character's own.
+local function RestoreMacros(confirm)
+	local made = Borrowed()
+	for k = #made.written, 1, -1 do
+		local entry = made.written[k]
+		local index = CharacterMacroIndex(entry.now.name, entry.now.body)
+		if ( index ) then
+			EditMacro(index, entry.own.name, MacroIcon(entry.own.icon), entry.own.body)
 		end
-		local index = CreateMacro(macro.name, MacroIcon(macro.icon), macro.body, 1)
+	end
+	for k = #made.created, 1, -1 do
+		local entry = made.created[k]
+		local index = CharacterMacroIndex(entry.name, entry.body)
+		if ( index ) then
+			DeleteMacro(index)
+		end
+	end
+	wipe(made.written)
+	wipe(made.created)
+	if ( confirm ) then
+		TellServerRestored()
+	end
+end
+
+local function ShortIcon(texture)
+	return string.match(texture or "", "([^\\]+)$") or texture
+end
+
+local function ApplyMacros(list)
+	local made = Borrowed()
+	-- This character's own, as they are now (RestoreMacros ran first).
+	local own = {}
+	local _, numCharacter = GetNumMacros()
+	for index = MAX_ACCOUNT + 1, MAX_ACCOUNT + numCharacter do
+		local name, texture, body = GetMacroInfo(index)
+		table.insert(own, { name = name, icon = ShortIcon(texture), body = body })
+	end
+
+	local nextOwn = 1
+	for _, macro in ipairs(list) do
+		local index
+		-- Over one of this character's own while it has any left...
+		while ( not index and nextOwn <= #own ) do
+			local slot = own[nextOwn]
+			nextOwn = nextOwn + 1
+			local at = CharacterMacroIndex(slot.name, slot.body)
+			if ( at ) then
+				index = EditMacro(at, macro.name, MacroIcon(macro.icon), macro.body)
+				if ( index ) then
+					local name, _, body = GetMacroInfo(index)
+					table.insert(made.written, { own = slot, now = { name = name, body = body } })
+				end
+			end
+		end
+		-- ...then in a new one.
+		if ( not index ) then
+			local _, count = GetNumMacros()
+			if ( count < MAX_CHARACTER ) then
+				index = CreateMacro(macro.name, MacroIcon(macro.icon), macro.body, 1)
+				if ( index ) then
+					local name, _, body = GetMacroInfo(index)
+					table.insert(made.created, { name = name, body = body })
+				end
+			end
+		end
 		if ( index and index > 0 ) then
-			local name, _, body = GetMacroInfo(index)
-			table.insert(CENTURION_AllStarMade, { name = name, body = body })
 			for _, button in ipairs(macro.buttons) do
 				PickupMacro(index)
 				PlaceAction(button + 1)
@@ -249,21 +332,23 @@ local function RunMacroWork()
 	end
 	if ( macroResetPending ) then
 		macroResetPending = false
-		DeleteMadeMacros()
+		RestoreMacros(macroConfirmPending)
+		macroConfirmPending = false
 	end
 	if ( macroMakePending ) then
 		local list = macroMakePending
 		macroMakePending = nil
-		MakeMacros(list)
+		ApplyMacros(list)
 	end
 end
 
 local function OnMacroLine(line)
-	if ( line == "RESET" ) then
+	if ( line == "RESET" or line == "SWAP" ) then
 		macroIncoming = {}
 		macroCurrent = nil
 		macroMakePending = nil
 		macroResetPending = true
+		macroConfirmPending = ( line == "RESET" )
 		RunMacroWork()
 	elseif ( line == "DONE" ) then
 		macroMakePending = macroIncoming
@@ -307,10 +392,11 @@ listener:SetScript("OnEvent", function(self, event, prefix, message)
 	if ( event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" ) then
 		if ( OutsideArena() ) then
 			livesFrame:Hide()
-			-- Macros a match made and never got to delete.
+			-- Macros a match borrowed and never got to put back.
 			if ( not cleanedAtLogin ) then
 				cleanedAtLogin = true
 				macroResetPending = true
+				macroConfirmPending = true
 				RunMacroWork()
 			end
 		end
