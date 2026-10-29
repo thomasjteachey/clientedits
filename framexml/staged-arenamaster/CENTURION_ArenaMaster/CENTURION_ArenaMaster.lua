@@ -835,380 +835,475 @@ local function SetPortraits(x, y, w, people, ring)
 end
 
 -- The All-Star lineup as the player sets it (owner 2026-10-29: "allow players
--- to rearrange what characters they pick and in what order"). Life one is the
--- character queuing. Every later life is a button: left-click opens a menu of
--- the account's level-60 characters, the standard kits and Random, right-click
--- puts it back on Random, and the arrows beside it move it a place. Each change
--- goes to the server at once (ALLSTAR:PICK), which keeps it for the character
--- and answers with the lineup as it holds.
-local CLASS_ORDER = { 1, 2, 3, 4, 5, 7, 8, 9, 11 }
-local MAX_SLOTS = 9
-local slots = {}
-local menuSlot                      -- the pick the menu is for (1 = life two)
-local pickMenu = CreateFrame("Frame", "CenturionArenaMasterPickMenu", am, "UIDropDownMenuTemplate")
+-- to rearrange what characters they pick and in what order", then "make it all
+-- drag and drop"). Life one is the character queuing. The bench in the left
+-- column holds the account's level-60 characters, Random and the standard
+-- kits: drag one onto a life to put it there, drag a life onto another to move
+-- it, drag a life off the row (or right-click it) to put it back on Random.
+-- Each change goes to the server at once (ALLSTAR:PICK), which keeps it for the
+-- character and answers with the lineup as it holds.
+local HideSlots, SetSlots
+do
+	local CLASS_ORDER = { 1, 2, 3, 4, 5, 7, 8, 9, 11 }
+	local MAX_SLOTS = 9
+	local slots = {}
 
-local function ClassColour(class)
-	local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[CLASS_TOKEN[class] or ""]
-	if not c then
-		return ""
-	end
-	return string.format("|cff%02x%02x%02x", c.r * 255, c.g * 255, c.b * 255)
-end
-
-local function FindOption(lu, id)
-	for _, o in ipairs(lu.options) do
-		if o.id == id then
-			return o
+	local function ClassColour(class)
+		local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[CLASS_TOKEN[class] or ""]
+		if not c then
+			return 1, 1, 1
 		end
+		return c.r, c.g, c.b
 	end
-	return nil
-end
 
-local function PickClass(lu, pick)
-	if not pick or pick == "-" then
+	local function FindOption(lu, id)
+		for _, o in ipairs(lu.options) do
+			if o.id == id then
+				return o
+			end
+		end
 		return nil
 	end
-	if string.sub(pick, 1, 1) == "s" then
-		return tonumber(string.sub(pick, 2))
-	end
-	local o = FindOption(lu, pick)
-	return o and o.class
-end
 
--- True when another life of the lineup plays that class.
-local function ClassTaken(lu, class, except)
-	if lu.first.class == class then
-		return true
-	end
-	for i = 1, lu.lives - 1 do
-		if i ~= except and PickClass(lu, lu.picks[i]) == class then
-			return true
+	local function PickClass(lu, pick)
+		if not pick or pick == "-" then
+			return nil
 		end
-	end
-	return false
-end
-
-local function SendPicks()
-	local lu = state.lineup
-	local picks = {}
-	for i = 1, lu.lives - 1 do
-		picks[i] = lu.picks[i] or "-"
-	end
-	while #picks > 0 and picks[#picks] == "-" do
-		table.remove(picks)
-	end
-	Send("ALLSTAR:PICK:" .. table.concat(picks, ","))
-end
-
-local function SetPick(index, pick)
-	local lu = state.lineup
-	if not lu or not lu.editable then
-		return
-	end
-	lu.picks[index] = pick
-	PlaySound("igMainMenuOptionCheckBoxOn")
-	SendPicks()
-	Draw()
-end
-
-local function MovePick(index, by)
-	local lu = state.lineup
-	local other = index + by
-	if not lu or not lu.editable or other < 1 or other > lu.lives - 1 then
-		return
-	end
-	lu.picks[index], lu.picks[other] = lu.picks[other] or "-", lu.picks[index] or "-"
-	PlaySound("igMainMenuOptionCheckBoxOn")
-	SendPicks()
-	Draw()
-end
-
--- A life dragged onto another: it takes that place and the ones between
--- shift over by one.
-local function DropPick(from, to)
-	local lu = state.lineup
-	local last = lu and lu.lives - 1 or 0
-	if not lu or not lu.editable or from == to or from < 1 or to < 1 or from > last or to > last then
-		return
-	end
-	local list = {}
-	for i = 1, last do
-		list[i] = lu.picks[i] or "-"
-	end
-	local moved = table.remove(list, from)
-	table.insert(list, to, moved)
-	lu.picks = list
-	PlaySound("igMainMenuOptionCheckBoxOn")
-	SendPicks()
-	Draw()
-end
-
-local function InitPickMenu(self, level)
-	local lu = state.lineup
-	if not lu or not menuSlot then
-		return
-	end
-	local index = menuSlot
-	local current = lu.picks[index] or "-"
-	local info
-	if level == 2 then
-		for _, class in ipairs(CLASS_ORDER) do
-			local id = "s" .. class
-			local taken = ClassTaken(lu, class, index)
-			info = UIDropDownMenu_CreateInfo()
-			info.text = taken and ClassName(class) or (ClassColour(class) .. ClassName(class) .. "|r")
-			info.checked = current == id
-			info.disabled = taken
-			info.func = function() SetPick(index, id) end
-			UIDropDownMenu_AddButton(info, level)
+		if string.sub(pick, 1, 1) == "s" then
+			return tonumber(string.sub(pick, 2))
 		end
-		return
+		local o = FindOption(lu, pick)
+		return o and o.class
 	end
 
-	info = UIDropDownMenu_CreateInfo()
-	info.text = "Life " .. (index + 1)
-	info.isTitle = true
-	info.notCheckable = true
-	UIDropDownMenu_AddButton(info, level)
-
-	info = UIDropDownMenu_CreateInfo()
-	info.text = "Random"
-	info.checked = current == "-"
-	info.func = function() SetPick(index, "-") end
-	UIDropDownMenu_AddButton(info, level)
-
-	if #lu.options > 0 then
-		info = UIDropDownMenu_CreateInfo()
-		info.text = "Your characters"
-		info.isTitle = true
-		info.notCheckable = true
-		UIDropDownMenu_AddButton(info, level)
-		for _, o in ipairs(lu.options) do
-			local id = o.id
-			local taken = ClassTaken(lu, o.class, index)
-			info = UIDropDownMenu_CreateInfo()
-			info.text = taken and (o.name .. "  " .. ClassName(o.class))
-				or (ClassColour(o.class) .. o.name .. "|r  |cff9d9d9d" .. ClassName(o.class) .. "|r")
-			info.checked = current == id
-			info.disabled = taken
-			info.func = function() SetPick(index, id) end
-			UIDropDownMenu_AddButton(info, level)
-		end
-	end
-
-	info = UIDropDownMenu_CreateInfo()
-	info.text = "Standard kit"
-	info.hasArrow = true
-	info.notCheckable = true
-	info.value = "STANDARD"
-	UIDropDownMenu_AddButton(info, level)
-end
-UIDropDownMenu_Initialize(pickMenu, InitPickMenu, "MENU")
-
-local function MakeArrow(dir)
-	local b = CreateFrame("Button", nil, poster)
-	b:SetWidth(24)
-	b:SetHeight(24)
-	local base = "Interface\\Buttons\\UI-SpellbookIcon-" .. dir .. "Page-"
-	b:SetNormalTexture(base .. "Up")
-	b:SetPushedTexture(base .. "Down")
-	b:SetDisabledTexture(base .. "Disabled")
-	b:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
-	b:Hide()
-	return b
-end
-
--- The portrait that follows the cursor while a life is dragged.
-local dragFrom
-local dragIcon = CreateFrame("Frame", nil, UIParent)
-dragIcon:SetFrameStrata("TOOLTIP")
-dragIcon:SetWidth(32)
-dragIcon:SetHeight(32)
-dragIcon.tex = dragIcon:CreateTexture(nil, "ARTWORK")
-dragIcon.tex:SetAllPoints(dragIcon)
-dragIcon:Hide()
-dragIcon:SetScript("OnUpdate", function(self)
-	local x, y = GetCursorPosition()
-	local scale = UIParent:GetEffectiveScale()
-	self:ClearAllPoints()
-	self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / scale, y / scale)
-end)
-
-for i = 1, MAX_SLOTS do
-	local b = CreateFrame("Button", nil, poster)
-	b:SetWidth(42)
-	b:SetHeight(42)
-	b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-	b:RegisterForDrag("LeftButton")
-	b:SetScript("OnDragStart", function(self)
+	local function SendPicks()
 		local lu = state.lineup
-		if i == 1 or not lu or not lu.editable then
+		local picks = {}
+		for i = 1, lu.lives - 1 do
+			picks[i] = lu.picks[i] or "-"
+		end
+		while #picks > 0 and picks[#picks] == "-" do
+			table.remove(picks)
+		end
+		Send("ALLSTAR:PICK:" .. table.concat(picks, ","))
+	end
+
+	-- The picks after life one as a full list, "-" for Random.
+	local function PickList(lu)
+		local list = {}
+		for i = 1, lu.lives - 1 do
+			list[i] = lu.picks[i] or "-"
+		end
+		return list
+	end
+
+	local function Commit(lu, list)
+		lu.picks = list
+		PlaySound("igMainMenuOptionCheckBoxOn")
+		SendPicks()
+		Draw()
+	end
+
+	local function Editable()
+		local lu = state.lineup
+		return lu and lu.editable and lu or nil
+	end
+
+	-- A bench pick dropped on a life. One class per lineup: another life holding
+	-- that class goes back to Random.
+	local function PlacePick(index, pick)
+		local lu = Editable()
+		if not lu or index < 1 or index > lu.lives - 1 then
 			return
 		end
+		local class = PickClass(lu, pick)
+		if class and class == lu.first.class then
+			return
+		end
+		local list = PickList(lu)
+		if list[index] == pick then
+			return
+		end
+		if class then
+			for i = 1, #list do
+				if i ~= index and PickClass(lu, list[i]) == class then
+					list[i] = "-"
+				end
+			end
+		end
+		list[index] = pick
+		Commit(lu, list)
+	end
+
+	-- A life dropped on another: it takes that place and the lives between shift
+	-- over by one.
+	local function MovePick(from, to)
+		local lu = Editable()
+		local last = lu and lu.lives - 1 or 0
+		if not lu or from == to or from < 1 or to < 1 or from > last or to > last then
+			return
+		end
+		local list = PickList(lu)
+		local moved = table.remove(list, from)
+		table.insert(list, to, moved)
+		Commit(lu, list)
+	end
+
+	local function ClearPick(index)
+		local lu = Editable()
+		if not lu or index < 1 or index > lu.lives - 1 then
+			return
+		end
+		local list = PickList(lu)
+		if list[index] == "-" then
+			return
+		end
+		list[index] = "-"
+		Commit(lu, list)
+	end
+
+	-- What is being dragged: { life = <index of the pick> } or { pick = <token> }.
+	local drag
+	local dragIcon = CreateFrame("Frame", nil, UIParent)
+	dragIcon:SetFrameStrata("TOOLTIP")
+	dragIcon:SetWidth(32)
+	dragIcon:SetHeight(32)
+	dragIcon.tex = dragIcon:CreateTexture(nil, "ARTWORK")
+	dragIcon.tex:SetAllPoints(dragIcon)
+	dragIcon:Hide()
+
+	local function EndDrag()
+		drag = nil
+		dragIcon:Hide()
+	end
+
+	dragIcon:SetScript("OnUpdate", function(self)
+		local x, y = GetCursorPosition()
+		local scale = UIParent:GetEffectiveScale()
+		self:ClearAllPoints()
+		self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / scale, y / scale)
+	end)
+
+	local function StartDrag(what, tex)
 		CloseDropDownMenus()
 		GameTooltip:Hide()
-		dragFrom = i
-		dragIcon.tex:SetTexture(self.circle:GetTexture())
-		dragIcon.tex:SetTexCoord(self.circle:GetTexCoord())
+		drag = what
+		dragIcon.tex:SetTexture(tex:GetTexture())
+		dragIcon.tex:SetTexCoord(tex:GetTexCoord())
 		dragIcon:Show()
-	end)
-	b:SetScript("OnDragStop", function()
-		local from = dragFrom
-		dragFrom = nil
-		dragIcon:Hide()
-		if not from then
-			return
-		end
-		for j, other in ipairs(slots) do
-			if j > 1 and other:IsShown() and MouseIsOver(other) then
-				DropPick(from - 1, j - 1)
-				return
+	end
+
+	-- The life under the cursor (2..lives), if any.
+	local function SlotUnderCursor()
+		for j, b in ipairs(slots) do
+			if b:IsShown() and MouseIsOver(b) then
+				return j
 			end
 		end
-	end)
-	b.circle = b:CreateTexture(nil, "ARTWORK")
-	b.circle:SetPoint("CENTER", b, "CENTER")
-	b.ring = b:CreateTexture(nil, "OVERLAY")
-	b.ring:SetTexture("Interface\\AchievementFrame\\UI-Achievement-IconFrame")
-	b.ring:SetAllPoints(b)
-	b.ring:SetTexCoord(0, 0.5625, 0, 0.5625)
-	b.glow = b:CreateTexture(nil, "HIGHLIGHT")
-	b.glow:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
-	b.glow:SetBlendMode("ADD")
-	b.glow:SetPoint("CENTER", b, "CENTER")
-	b.name = poster:CreateFontString(nil, "OVERLAY")
-	b.name:SetFontObject(fontInk10)
-	b.sub = poster:CreateFontString(nil, "OVERLAY")
-	b.sub:SetFontObject(fontInk9)
-	b.prev = MakeArrow("Prev")
-	b.next = MakeArrow("Next")
-	b.prev:SetScript("OnClick", function() MovePick(i - 1, -1) end)
-	b.next:SetScript("OnClick", function() MovePick(i - 1, 1) end)
-	b:SetScript("OnClick", function(self, button)
-		local lu = state.lineup
-		if i == 1 or not lu or not lu.editable then
+		return nil
+	end
+
+	local function Drop()
+		local what = drag
+		EndDrag()
+		if not what then
 			return
 		end
-		if button == "RightButton" then
-			CloseDropDownMenus()
-			SetPick(i - 1, "-")
-			return
+		local j = SlotUnderCursor()
+		if what.life then
+			if not j then
+				ClearPick(what.life)
+			elseif j > 1 then
+				MovePick(what.life, j - 1)
+			end
+		elseif j and j > 1 then
+			PlacePick(j - 1, what.pick)
 		end
-		PlaySound("igMainMenuOptionCheckBoxOn")
-		if menuSlot == i - 1 and DropDownList1 and DropDownList1:IsShown() then
-			CloseDropDownMenus()
-			return
-		end
-		-- Beside the portrait, clear of the names under the row.
-		menuSlot = i - 1
-		ToggleDropDownMenu(1, nil, pickMenu, self, self:GetWidth(), self:GetHeight())
-	end)
-	b:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_TOP")
-		if i == 1 then
-			GameTooltip:SetText("Life 1", 1, 1, 1)
-			GameTooltip:AddLine("The character you queue with always plays your first life.", nil, nil, nil, true)
-		else
+	end
+
+	for i = 1, MAX_SLOTS do
+		local b = CreateFrame("Button", nil, poster)
+		b:SetWidth(42)
+		b:SetHeight(42)
+		b:RegisterForClicks("RightButtonUp")
+		b:RegisterForDrag("LeftButton")
+		b.circle = b:CreateTexture(nil, "ARTWORK")
+		b.circle:SetPoint("CENTER", b, "CENTER")
+		b.ring = b:CreateTexture(nil, "OVERLAY")
+		b.ring:SetTexture("Interface\\AchievementFrame\\UI-Achievement-IconFrame")
+		b.ring:SetAllPoints(b)
+		b.ring:SetTexCoord(0, 0.5625, 0, 0.5625)
+		b.glow = b:CreateTexture(nil, "HIGHLIGHT")
+		b.glow:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+		b.glow:SetBlendMode("ADD")
+		b.glow:SetPoint("CENTER", b, "CENTER")
+		b.name = poster:CreateFontString(nil, "OVERLAY")
+		b.name:SetFontObject(fontInk10)
+		b.sub = poster:CreateFontString(nil, "OVERLAY")
+		b.sub:SetFontObject(fontInk9)
+		b:SetScript("OnClick", function()
+			if i > 1 then
+				ClearPick(i - 1)
+			end
+		end)
+		b:SetScript("OnDragStart", function(self)
+			if i > 1 and Editable() then
+				StartDrag({ life = i - 1 }, self.circle)
+			end
+		end)
+		b:SetScript("OnDragStop", Drop)
+		b:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_TOP")
 			GameTooltip:SetText("Life " .. i, 1, 1, 1)
-			GameTooltip:AddLine("Click to choose who plays it. Right-click for Random.", nil, nil, nil, true)
-			GameTooltip:AddLine("Drag it onto another life to change the order.", nil, nil, nil, true)
-		end
-		GameTooltip:Show()
-	end)
-	b:SetScript("OnLeave", function()
-		GameTooltip:Hide()
-	end)
-	b:Hide()
-	slots[i] = b
-end
-
-local function HideSlots()
-	for _, b in ipairs(slots) do
+			if i == 1 then
+				GameTooltip:AddLine("The character you queue with always plays your first life.", nil, nil, nil, true)
+			else
+				GameTooltip:AddLine("Drag a character or kit from the left onto it to choose who plays it.", nil, nil, nil, true)
+				GameTooltip:AddLine("Drag it onto another life to move it, or off the row for Random.", nil, nil, nil, true)
+			end
+			GameTooltip:Show()
+		end)
+		b:SetScript("OnLeave", function()
+			GameTooltip:Hide()
+		end)
 		b:Hide()
-		b.name:Hide()
-		b.sub:Hide()
-		b.prev:Hide()
-		b.next:Hide()
+		slots[i] = b
 	end
-end
 
--- What a life shows: { icon texture or class token, name, sub }.
-local function LifeLook(lu, i)
-	if i == 1 then
-		return CLASS_TOKEN[lu.first.class], lu.first.name, "First life"
-	end
-	local pick = lu.picks[i - 1] or "-"
-	if pick == "-" then
-		return nil, "Random", lu.shuffled and "Any class left" or "Next in your list"
-	end
-	if string.sub(pick, 1, 1) == "s" then
-		local class = tonumber(string.sub(pick, 2))
-		return CLASS_TOKEN[class], ClassName(class), "Standard kit"
-	end
-	local o = FindOption(lu, pick)
-	if o then
-		return CLASS_TOKEN[o.class], o.name, ClassName(o.class)
-	end
-	return nil, "Random", "Any class left"
-end
+	------------------------------------------------------------------
+	-- the bench: what can be dragged onto a life, in the left column
+	------------------------------------------------------------------
+	local BENCH_X, BENCH_W = 21, 158
+	local CHIP_COLS, CHIP_ROWS, CHIP_W, CHIP_H = 3, 3, 52, 42
+	local bench = CreateFrame("Frame", nil, am)
+	bench:SetWidth(BENCH_W)
+	bench:SetHeight(230)
+	At(bench, BENCH_X, 210)
+	bench:EnableMouseWheel(true)
+	bench:Hide()
+	local benchScroll = 0
 
-local function SetSlots(y)
-	local lu = state.lineup
-	local n = math.min(MAX_SLOTS, lu.lives)
-	local ring = 42
-	local inner = ring * 0.75
-	local w = PW - 16
-	local step = w / math.max(1, n)
-	local beside = step >= 96
-	for i, b in ipairs(slots) do
-		if i <= n then
-			local cx = 8 + (i - 1) * step + step / 2
-			local token, name, sub = LifeLook(lu, i)
-			b:ClearAllPoints()
-			b:SetPoint("TOPLEFT", poster, "TOPLEFT", cx - ring / 2, -y)
-			b.circle:SetWidth(inner)
-			b.circle:SetHeight(inner)
-			b.glow:SetWidth(inner)
-			b.glow:SetHeight(inner)
-			if token then
-				SetClassIcon(b.circle, token)
-			else
-				b.circle:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
-				b.circle:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-				b.circle:Show()
+	local benchChars = bench:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	benchChars:SetPoint("TOPLEFT", bench, "TOPLEFT", 2, -2)
+	benchChars:SetJustifyH("LEFT")
+	local benchNone = bench:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	benchNone:SetPoint("TOPLEFT", bench, "TOPLEFT", 4, -22)
+	benchNone:SetWidth(BENCH_W - 8)
+	benchNone:SetJustifyH("LEFT")
+	benchNone:SetText("No level-60 characters yet. Use Random or a standard kit.")
+	local benchKits = bench:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	benchKits:SetJustifyH("LEFT")
+	benchKits:SetText("Random and standard kits")
+
+	local function BenchButton(size)
+		local b = CreateFrame("Button", nil, bench)
+		b:SetWidth(size)
+		b:SetHeight(size)
+		b:RegisterForDrag("LeftButton")
+		b.icon = b:CreateTexture(nil, "ARTWORK")
+		b.icon:SetWidth(size)
+		b.icon:SetHeight(size)
+		b.icon:SetPoint("TOP", b, "TOP")
+		b.glow = b:CreateTexture(nil, "HIGHLIGHT")
+		b.glow:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+		b.glow:SetBlendMode("ADD")
+		b.glow:SetAllPoints(b.icon)
+		b:SetScript("OnDragStart", function(self)
+			if self.pick and not self.blocked and Editable() then
+				StartDrag({ pick = self.pick }, self.icon)
 			end
-			if i == 1 then b.glow:Hide() else b.glow:Show() end
-			b.name:ClearAllPoints()
-			b.name:SetPoint("CENTER", poster, "TOPLEFT", cx, -(y + ring + 6))
-			FitText(b.name, name or "", step - 4, fontInk10, fontInk9)
-			b.sub:ClearAllPoints()
-			b.sub:SetPoint("CENTER", poster, "TOPLEFT", cx, -(y + ring + 18))
-			b.sub:SetText(sub or "")
-			b:Show()
-			b.name:Show()
-			b.sub:Show()
-
-			b.prev:ClearAllPoints()
-			b.next:ClearAllPoints()
-			b.prev:SetPoint("RIGHT", b, "LEFT", 0, 0)
-			b.next:SetPoint("LEFT", b, "RIGHT", 0, 0)
-			local movable = lu.editable and i > 1 and beside
-			if movable then
-				b.prev:Show()
-				b.next:Show()
-				if i > 2 then b.prev:Enable() else b.prev:Disable() end
-				if i < n then b.next:Enable() else b.next:Disable() end
-			else
-				b.prev:Hide()
-				b.next:Hide()
+		end)
+		b:SetScript("OnDragStop", Drop)
+		b:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText(self.tipTitle or "", 1, 1, 1)
+			if self.tipText then
+				GameTooltip:AddLine(self.tipText, nil, nil, nil, true)
 			end
+			if self.blocked then
+				GameTooltip:AddLine("Your first life is already this class.", 1, 0.3, 0.3, true)
+			elseif self.used then
+				GameTooltip:AddLine("In your lineup. Drag it to another life to move it there.", 0.5, 1, 0.5, true)
+			else
+				GameTooltip:AddLine("Drag onto a life.", 0.5, 1, 0.5, true)
+			end
+			GameTooltip:Show()
+		end)
+		b:SetScript("OnLeave", function()
+			GameTooltip:Hide()
+		end)
+		return b
+	end
+
+	local chips = {}
+	for k = 1, CHIP_COLS * CHIP_ROWS do
+		local c = BenchButton(26)
+		c:SetWidth(CHIP_W)
+		c:SetHeight(CHIP_H - 2)
+		local col, row = (k - 1) % CHIP_COLS, math.floor((k - 1) / CHIP_COLS)
+		c:SetPoint("TOPLEFT", bench, "TOPLEFT", col * (CHIP_W + 1), -(18 + row * CHIP_H))
+		c.name = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		c.name:SetPoint("TOP", c.icon, "BOTTOM", 0, -2)
+		c.name:SetWidth(CHIP_W)
+		c.name:SetHeight(12)
+		c:Hide()
+		chips[k] = c
+	end
+
+	local kitButtons = {}
+	local KIT_SIZE, KIT_STEP = 26, BENCH_W / 5
+	for k = 1, 10 do
+		local b = BenchButton(KIT_SIZE)
+		if k == 1 then
+			b.pick = "-"
+			b.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+			b.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+			b.tipTitle = "Random"
+			b.tipText = "A life on Random takes the next of the characters you did not place, then a standard kit."
 		else
+			local class = CLASS_ORDER[k - 1]
+			b.class = class
+			b.pick = "s" .. class
+			SetClassIcon(b.icon, CLASS_TOKEN[class])
+			b.tipTitle = "Standard kit: " .. ClassName(class)
+			b.tipText = "The tournament spec and gear for the class."
+		end
+		kitButtons[k] = b
+	end
+
+	local function Dim(b, used, blocked)
+		b.used = used
+		b.blocked = blocked
+		b:SetAlpha(blocked and 0.3 or used and 0.55 or 1)
+	end
+
+	local function DrawBench()
+		local lu = Editable()
+		if not lu then
+			bench:Hide()
+			return
+		end
+		local inLineup = {}
+		for i = 1, lu.lives - 1 do
+			inLineup[lu.picks[i] or "-"] = true
+		end
+		local n = #lu.options
+		local per = CHIP_COLS * CHIP_ROWS
+		local maxScroll = math.max(0, math.ceil((n - per) / CHIP_COLS))
+		benchScroll = math.max(0, math.min(benchScroll, maxScroll))
+		benchChars:SetText(n > per and string.format("Your characters (%d)", n) or "Your characters")
+		if n == 0 then benchNone:Show() else benchNone:Hide() end
+		for k, c in ipairs(chips) do
+			local o = lu.options[benchScroll * CHIP_COLS + k]
+			if o then
+				c.pick = o.id
+				SetClassIcon(c.icon, CLASS_TOKEN[o.class])
+				c.name:SetText(o.name)
+				c.name:SetTextColor(ClassColour(o.class))
+				c.tipTitle = o.name
+				c.tipText = ClassName(o.class) .. ", with their own gear, talents, keybindings and macros."
+				Dim(c, inLineup[o.id], o.class == lu.first.class)
+				c:Show()
+			else
+				c.pick = nil
+				c:Hide()
+			end
+		end
+		-- The kits sit under the last row of characters.
+		local rows = math.max(1, math.min(CHIP_ROWS, math.ceil(n / CHIP_COLS)))
+		local kitsTop = 18 + rows * CHIP_H + 6
+		benchKits:ClearAllPoints()
+		benchKits:SetPoint("TOPLEFT", bench, "TOPLEFT", 2, -kitsTop)
+		for k, b in ipairs(kitButtons) do
+			local col, row = (k - 1) % 5, math.floor((k - 1) / 5)
+			b:ClearAllPoints()
+			b:SetPoint("TOPLEFT", bench, "TOPLEFT", col * KIT_STEP + (KIT_STEP - KIT_SIZE) / 2,
+				-(kitsTop + 16 + row * (KIT_SIZE + 4)))
+			if k == 1 then
+				Dim(b, false, false)
+			else
+				Dim(b, inLineup[b.pick], b.class == lu.first.class)
+			end
+		end
+		bench:Show()
+	end
+
+	bench:SetScript("OnMouseWheel", function(_, delta)
+		benchScroll = benchScroll - delta
+		DrawBench()
+	end)
+
+	function HideSlots()
+		for _, b in ipairs(slots) do
 			b:Hide()
 			b.name:Hide()
 			b.sub:Hide()
-			b.prev:Hide()
-			b.next:Hide()
 		end
+		bench:Hide()
+		EndDrag()
+	end
+
+	-- What a life shows: { icon texture or class token, name, sub }.
+	local function LifeLook(lu, i)
+		if i == 1 then
+			return CLASS_TOKEN[lu.first.class], lu.first.name, "First life"
+		end
+		local pick = lu.picks[i - 1] or "-"
+		if pick == "-" then
+			return nil, "Random", lu.shuffled and "Any class left" or "Next in your list"
+		end
+		if string.sub(pick, 1, 1) == "s" then
+			local class = tonumber(string.sub(pick, 2))
+			return CLASS_TOKEN[class], ClassName(class), "Standard kit"
+		end
+		local o = FindOption(lu, pick)
+		if o then
+			return CLASS_TOKEN[o.class], o.name, ClassName(o.class)
+		end
+		return nil, "Random", "Any class left"
+	end
+
+	function SetSlots(y)
+		local lu = state.lineup
+		local n = math.min(MAX_SLOTS, lu.lives)
+		local ring = 42
+		local inner = ring * 0.75
+		local w = PW - 16
+		local step = w / math.max(1, n)
+		for i, b in ipairs(slots) do
+			if i <= n then
+				local cx = 8 + (i - 1) * step + step / 2
+				local token, name, sub = LifeLook(lu, i)
+				b:ClearAllPoints()
+				b:SetPoint("TOPLEFT", poster, "TOPLEFT", cx - ring / 2, -y)
+				b.circle:SetWidth(inner)
+				b.circle:SetHeight(inner)
+				b.glow:SetWidth(inner)
+				b.glow:SetHeight(inner)
+				if token then
+					SetClassIcon(b.circle, token)
+				else
+					b.circle:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+					b.circle:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+					b.circle:Show()
+				end
+				if i == 1 or not lu.editable then b.glow:Hide() else b.glow:Show() end
+				b.name:ClearAllPoints()
+				b.name:SetPoint("CENTER", poster, "TOPLEFT", cx, -(y + ring + 6))
+				FitText(b.name, name or "", step - 4, fontInk10, fontInk9)
+				b.sub:ClearAllPoints()
+				b.sub:SetPoint("CENTER", poster, "TOPLEFT", cx, -(y + ring + 18))
+				b.sub:SetText(sub or "")
+				b:Show()
+				b.name:Show()
+				b.sub:Show()
+			else
+				b:Hide()
+				b.name:Hide()
+				b.sub:Hide()
+			end
+		end
+		DrawBench()
 	end
 end
 
@@ -1749,7 +1844,7 @@ PAGES.A = {
 		local word = LIVES_WORD[lives] or (lives .. " lives")
 		local headingSub
 		if lu and lu.editable then
-			headingSub = "Click a life to choose who plays it. Drag lives to change the order."
+			headingSub = "Drag characters and kits from the left onto a life."
 		elseif lu and lu.shuffled then
 			headingSub = "shuffled every match"
 		end
@@ -2251,6 +2346,7 @@ function Draw()
 	end
 
 	if replays then
+		HideSlots()
 		plateText:SetText("Replays")
 		poster:Hide()
 		status:SetText("")
