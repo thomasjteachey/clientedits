@@ -155,6 +155,11 @@ check('Arenas in rotation' in texts and "Blade's Edge Arena" in texts or 'Blade\
       'the rotation from AM:POOL')
 dump('1_skirmish')
 
+deliver(['AM:POOL:559,562,572,617,618,980,982,983,984,985,986,1007,1008,1134,1401,1402,1403,1504,1552,1683,559'])
+check('Arenas in rotation (20)' in visible_texts(), 'a pool of 20 (one listed twice) shows all 20, counted')
+dump('1b_skirmish_pool20')
+deliver(['AM:POOL:559,562,572,617,618'])
+
 bots = g.CenturionArenaMasterBots
 bots.Click(bots)
 check(last_sent() == 'ARENABOTS:0', 'unticking the box sends ARENABOTS:0')

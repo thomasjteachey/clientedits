@@ -173,12 +173,13 @@ local function SetArenaArt(holder, screen, w, h, cy, zoom)
 	holder.art:Hide()
 	if not holder.emblem then
 		holder.emblem = holder:CreateTexture(nil, "ARTWORK")
-		holder.emblem:SetWidth(30)
-		holder.emblem:SetHeight(30)
 		holder.emblem:SetPoint("CENTER", holder, "CENTER", 0, 0)
 		holder.emblem:SetTexture("Interface\\Icons\\Achievement_Arena_2v2_7")
 		holder.emblem:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 	end
+	local size = math.min(30, h - 4)
+	holder.emblem:SetWidth(size)
+	holder.emblem:SetHeight(size)
 	holder.emblem:Show()
 end
 
@@ -722,10 +723,13 @@ local function SetPortraits(x, y, w, people, ring)
 	end
 end
 
--- The arenas a skirmish can be fought in (AM:POOL), five thumbnails.
-local THUMBS = 5
+-- The arenas a skirmish can be fought in (AM:POOL) - every one of them (owner:
+-- "only shows 5 even though clearly i have like 20"). Up to five: a strip of
+-- pictures with their names. More: two rows of smaller pictures, each named
+-- in its tooltip.
+local MAX_THUMBS = 24
 local thumbs = {}
-for i = 1, THUMBS do
+for i = 1, MAX_THUMBS do
 	local t = CreateFrame("Frame", nil, poster)
 	t:SetWidth(78)
 	t:SetHeight(52)
@@ -733,11 +737,21 @@ for i = 1, THUMBS do
 	t.edge:SetTexture(20 / 255, 12 / 255, 4 / 255, 1)
 	t.edge:SetAllPoints(t)
 	t.art = t:CreateTexture(nil, "ARTWORK")
-	t.art:SetWidth(76)
-	t.art:SetHeight(50)
-	At(t.art, 1, 1, t)
+	t.art:SetPoint("TOPLEFT", t, "TOPLEFT", 1, -1)
+	t.art:SetPoint("BOTTOMRIGHT", t, "BOTTOMRIGHT", -1, 1)
 	t.name = poster:CreateFontString(nil, "OVERLAY")
 	t.name:SetFontObject(fontInk10)
+	t:EnableMouse(true)
+	t:SetScript("OnEnter", function(self)
+		if self.arena then
+			GameTooltip:SetOwner(self, "ANCHOR_TOP")
+			GameTooltip:SetText(self.arena, 1, 1, 1)
+			GameTooltip:Show()
+		end
+	end)
+	t:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
 	t:Hide()
 	thumbs[i] = t
 end
@@ -746,33 +760,58 @@ local function HideThumbs()
 	for _, t in ipairs(thumbs) do
 		t:Hide()
 		t.name:Hide()
+		t.arena = nil
 	end
 end
 
+-- Returns how many arenas it shows.
 local function SetThumbs(y, mapIds)
-	local tw, gap = 76, 18
-	local n = math.min(THUMBS, #mapIds)
-	local x0 = (PW - (n * tw + (n - 1) * gap)) / 2
+	local list, seen = {}, {}
+	for _, mapId in ipairs(mapIds) do
+		if not seen[mapId] then
+			seen[mapId] = true
+			table.insert(list, mapId)
+		end
+	end
+	local n = math.min(MAX_THUMBS, #list)
+	local compact = n > 5
+	local rows = compact and 2 or 1
+	local cols = math.max(1, math.ceil(n / rows))
+	local gap = compact and 5 or 18
+	local tw = compact and math.min(76, math.floor((PW - 40 - (cols - 1) * gap) / cols)) or 76
+	local th = compact and math.floor(tw * 2 / 3) or 50
+	local x0 = (PW - (cols * tw + (cols - 1) * gap)) / 2
 	for i, t in ipairs(thumbs) do
-		local mapId = mapIds[i]
+		local mapId = list[i]
 		if i <= n and mapId then
 			local name, screen = MapInfo(mapId)
-			-- A thumbnail's caption is short: "Blade's Edge", "Ring of Valor".
-			name = string.gsub(string.gsub(name, " Arena$", ""), "^The ", "")
-			local x = x0 + (i - 1) * (tw + gap)
+			local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
+			local x = x0 + col * (tw + gap)
+			local ty = y + row * (th + 2 + gap)
+			t:SetWidth(tw + 2)
+			t:SetHeight(th + 2)
 			t:ClearAllPoints()
-			t:SetPoint("TOPLEFT", poster, "TOPLEFT", x - 1, -(y - 1))
-			SetArenaArt(t, screen, 76, 50, 0.5, 0.8)
-			t.name:ClearAllPoints()
-			t.name:SetPoint("CENTER", poster, "TOPLEFT", x + tw / 2, -(y + 62))
-			FitText(t.name, name, tw + gap - 2, fontInk10, fontInk9)
+			t:SetPoint("TOPLEFT", poster, "TOPLEFT", x - 1, -(ty - 1))
+			SetArenaArt(t, screen, tw, th, 0.5, 0.8)
+			t.arena = name
+			if compact then
+				t.name:Hide()
+			else
+				-- A caption under a picture is short: "Blade's Edge", "Ring of Valor".
+				local short = string.gsub(string.gsub(name, " Arena$", ""), "^The ", "")
+				t.name:ClearAllPoints()
+				t.name:SetPoint("CENTER", poster, "TOPLEFT", x + tw / 2, -(y + 62))
+				FitText(t.name, short, tw + gap - 2, fontInk10, fontInk9)
+				t.name:Show()
+			end
 			t:Show()
-			t.name:Show()
 		else
 			t:Hide()
 			t.name:Hide()
+			t.arena = nil
 		end
 	end
+	return n
 end
 
 -- A line in the middle of the sheet: no team yet, still reading.
@@ -1324,8 +1363,8 @@ local function DrawPoster(p)
 
 	if p.pool then
 		if state.pool and #state.pool > 0 then
-			SetHeading(y + 2, "Arenas in rotation")
-			SetThumbs(y + 14, state.pool)
+			local shown = SetThumbs(y + 14, state.pool)
+			SetHeading(y + 2, shown > 5 and string.format("Arenas in rotation (%d)", shown) or "Arenas in rotation")
 		end
 	end
 
