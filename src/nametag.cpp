@@ -136,6 +136,12 @@ static const DWORD kAuraHeapPtr     = 0xC58;
 static const DWORD kAuraInline      = 0xC50;
 static const DWORD kAuraStride      = 0x18;
 static const DWORD kAuraSpell       = 0x08;
+// The stack count, one byte: UnitAura's fourth return (0x006147C0 reads
+// movzx [entry+0x0E]).
+static const DWORD kAuraStack       = 0x0E;
+// The realm's All-Star arena: a hidden aura on every seat whose stack count is
+// the lives it has left (Arena::ShowAllStarLives), shown after the marker.
+static const DWORD kLivesAura       = 92013;
 
 enum Marker { MARK_NONE = 0, MARK_WORLD, MARK_TOURNAMENT, MARK_BOT };
 
@@ -633,12 +639,36 @@ static int MarkerFor(void* tag, void* unit)
 
 static int SquadOf(void* unit);
 
-// A marker key: the marker in the low four bits and, in a multi-team arena,
-// the squad (1..4) above them - the word is drawn in the squad's own colour
-// there, so a squad flag arriving has to rebuild the tag just as a new marker
-// does, and keeping both in the one key the tag was built with does that.
+// A marker key: the marker in the low four bits, in a multi-team arena the
+// squad (1..4) in the next four - the word is drawn in the squad's own colour
+// there - and in an All-Star arena the lives left above them. A squad flag
+// arriving or a life lost has to rebuild the tag just as a new marker does,
+// and keeping all three in the one key the tag was built with does that.
 static int MarkerOf(int key) { return key & 0xF; }
-static int SquadOfKey(int key) { return key >> 4; }
+static int SquadOfKey(int key) { return (key >> 4) & 0xF; }
+static int LivesOfKey(int key) { return (key >> 8) & 0xFF; }
+
+// The stack count of kLivesAura on the unit, 0 without it.
+static int LivesOf(void* unit)
+{
+    BYTE* u = (BYTE*)unit;
+    if (!Readable(u + kAuraInline, kAuraInlineCount - kAuraInline + 4))
+        return 0;
+
+    DWORD count = *(DWORD*)(u + kAuraInlineCount);
+    BYTE* entries = u + kAuraInline;
+    if (count == 0xFFFFFFFF) {
+        count = *(DWORD*)(u + kAuraHeapCount);
+        entries = *(BYTE**)(u + kAuraHeapPtr);
+    }
+    if (!entries || count > 255 || !Readable(entries, count * kAuraStride))
+        return 0;
+
+    for (DWORD i = 0; i < count; ++i)
+        if (*(DWORD*)(entries + i * kAuraStride + kAuraSpell) == kLivesAura)
+            return *(entries + i * kAuraStride + kAuraStack);
+    return 0;
+}
 
 // |c codes: parsed by the font's tokenizer (0x006BD64F), and honoured once the
 // tag's string is built without flag 0x08 - see kFlagsImm.
@@ -653,7 +683,13 @@ static int MarkerText(int key, char* out, size_t size)
     if (mark < MARK_WORLD || mark > MARK_BOT)
         return 0;
     DWORD const rgb = squad >= 1 && squad <= 4 ? g_squadTint[squad - 1].rgb : kMarkerColour[mark];
-    int const n = _snprintf_s(out, size, _TRUNCATE, "|cff%06x%s|r\n", rgb & 0xFFFFFF, kMarkerWord[mark]);
+    int const lives = LivesOfKey(key);
+    int n;
+    if (lives > 0)
+        n = _snprintf_s(out, size, _TRUNCATE, "|cff%06x%s - %d %s|r\n", rgb & 0xFFFFFF, kMarkerWord[mark],
+            lives, lives == 1 ? "life" : "lives");
+    else
+        n = _snprintf_s(out, size, _TRUNCATE, "|cff%06x%s|r\n", rgb & 0xFFFFFF, kMarkerWord[mark]);
     return n > 0 ? n : 0;
 }
 
@@ -662,7 +698,9 @@ static int WantedMarker(void* tag, void* unit)
     if (!NameTag_Enabled() || !unit || !Readable(tag, 0x20))
         return MARK_NONE;
     int const mark = MarkerFor(tag, unit);
-    return mark != MARK_NONE ? mark | (SquadOf(unit) << 4) : MARK_NONE;
+    if (mark == MARK_NONE)
+        return MARK_NONE;
+    return mark | (SquadOf(unit) << 4) | (LivesOf(unit) << 8);
 }
 
 extern "C" int __cdecl NameTagMarker(void* tag, void* unit, char* buf, int lines)
