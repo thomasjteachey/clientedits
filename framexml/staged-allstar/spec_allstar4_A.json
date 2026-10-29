@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-A",
+  "change": "allstar-4v4",
+  "stage": "/home/brokilodeluxe/allstar-20261028/client/stageA4",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "Interface\\FrameXML\\ArenaFrame.lua": "db0da183b64ba1649a3302a20c88dbee"
+  }
+}

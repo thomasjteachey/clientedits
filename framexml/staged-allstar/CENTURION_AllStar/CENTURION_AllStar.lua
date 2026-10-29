@@ -18,6 +18,8 @@
 -- the account's set) or ALLSTAR:BIND:RESET (the player is themselves again,
 -- or wears a starter template). None of it is ever saved: SaveBindings is not
 -- called, and RESET loads the player's real set back from the client's files.
+--
+-- ALLSTAR:LIVES:<left>:<total> puts the player's own lives on screen.
 -- Without the server's lines this addon does nothing.
 
 local QUIET_FOR = 5            -- seconds after the server's line
@@ -138,11 +140,46 @@ local function GuardBindingWindow()
 end
 GuardBindingWindow()
 
+-- Lives ---------------------------------------------------------------------
+-- ALLSTAR:LIVES:<left>:<total>: the player's own lives, under the arena's
+-- team counters (which count each team's lives). Put away outside an arena.
+local livesFrame = CreateFrame("Frame", "CenturionAllStarLives", UIParent)
+livesFrame:SetWidth(240)
+livesFrame:SetHeight(22)
+livesFrame:SetPoint("TOP", UIParent, "TOP", 0, -80)
+local livesText = livesFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+livesText:SetPoint("CENTER", livesFrame, "CENTER", 0, 0)
+livesFrame:Hide()
+
+local function ShowLives(left, total)
+	if ( left > 0 ) then
+		livesText:SetText(string.format("Your lives: %d of %d", left, total))
+		livesText:SetTextColor(1.0, 0.82, 0.0)
+	else
+		livesText:SetText("You are out of lives")
+		livesText:SetTextColor(1.0, 0.25, 0.25)
+	end
+	livesFrame:Show()
+end
+
+local function OutsideArena()
+	local _, instanceType = IsInInstance()
+	return instanceType ~= "arena"
+end
+
 local listener = CreateFrame("Frame")
 listener:RegisterEvent("CHAT_MSG_ADDON")
 listener:RegisterEvent("PLAYER_REGEN_ENABLED")
 listener:RegisterEvent("ADDON_LOADED")
+listener:RegisterEvent("PLAYER_ENTERING_WORLD")
+listener:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 listener:SetScript("OnEvent", function(self, event, prefix, message)
+	if ( event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" ) then
+		if ( OutsideArena() ) then
+			livesFrame:Hide()
+		end
+		return
+	end
 	if ( event == "ADDON_LOADED" ) then
 		if ( prefix == "Blizzard_BindingUI" ) then
 			GuardBindingWindow()
@@ -162,5 +199,10 @@ listener:SetScript("OnEvent", function(self, event, prefix, message)
 		quietUntil = GetTime() + QUIET_FOR
 	elseif ( string.sub(message, 1, 13) == "ALLSTAR:BIND:" ) then
 		OnBindLine(string.sub(message, 14))
+	else
+		local left, total = string.match(message, "^ALLSTAR:LIVES:(%d+):(%d+)$")
+		if ( left and not OutsideArena() ) then
+			ShowLives(tonumber(left), tonumber(total))
+		end
 	end
 end)

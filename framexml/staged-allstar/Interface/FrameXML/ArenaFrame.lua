@@ -42,8 +42,9 @@ CENTURION_SOLO_SHUFFLE_TEXT = "The teams are dealt again before every round: six
 local SHUFFLE_DEFAULT_ROW = MAX_ARENA_TEAMS + 2
 
 -- CENTURION: All-Star. Its battlemaster sends CCGAME ARENAQUEUE:ALLSTAR. The
--- practice line becomes the four All-Star skirmishes - 1v1, 2v2, 3v3 and 5v5,
--- one a row; the server reads the row as the size - beside the "Arena bot
+-- practice line becomes the five All-Star skirmishes - 1v1 to 5v5, one a row,
+-- the fifth on a button of its own (ALL_STAR_EXTRA_ROW) that only this mode
+-- shows; the server reads the row as the size - beside the "Arena bot
 -- matches" box, and the rated rows are put away: there is no rated All-Star.
 -- A party joins together as ever, up to the row's size.
 CENTURION_ARENA_ALLSTAR = false
@@ -53,9 +54,12 @@ CENTURION_ALL_STAR_ROWS = {
     [MAX_ARENA_TEAMS + 1] = "1v1 All-Star",
     [MAX_ARENA_TEAMS + 2] = "2v2 All-Star",
     [MAX_ARENA_TEAMS + 3] = "3v3 All-Star",
-    [MAX_ARENA_TEAMS + 4] = "5v5 All-Star",
+    [MAX_ARENA_TEAMS + 4] = "4v4 All-Star",
+    [MAX_ARENA_TEAMS + 5] = "5v5 All-Star",
 }
-CENTURION_ALL_STAR_TEXT = "Every time you fall you are straight back in as the next level 60 character in your character list - or a starter loadout for a class you have none of - until you have fallen as all nine classes. The last team with lives left wins."
+-- The button past the last practice row; nothing but All-Star shows it.
+local ALL_STAR_EXTRA_ROW = MAX_ARENA_BATTLES + 1
+CENTURION_ALL_STAR_TEXT = "Every time you fall you get back up where you fell as the next level 60 character in your character list - or a starter loadout for a class you have none of - until you have fallen as all nine classes. The last team with lives left wins."
 -- Picked when the window opens on anything else: the 2v2 row.
 local ALL_STAR_DEFAULT_ROW = MAX_ARENA_TEAMS + 2
 
@@ -92,6 +96,13 @@ local function ArenaFrame_EnsureButtons()
         local btn = CreateFrame("Button", "ArenaZone8", ArenaFrame, "ArenaButtonTemplate")
         btn:SetID(8)
         btn:SetScript("OnClick", ArenaButton_OnClick)
+    end
+    -- All-Star's fifth row
+    if not _G["ArenaZone" .. ALL_STAR_EXTRA_ROW] then
+        local btn = CreateFrame("Button", "ArenaZone" .. ALL_STAR_EXTRA_ROW, ArenaFrame, "ArenaButtonTemplate")
+        btn:SetID(ALL_STAR_EXTRA_ROW)
+        btn:SetScript("OnClick", ArenaButton_OnClick)
+        btn:Hide()
     end
 end
 
@@ -150,6 +161,13 @@ local function ArenaFrame_Position()
             ArenaZone8:ClearAllPoints()
             ArenaZone8:SetPoint("LEFT", ArenaFrame, "LEFT", RATED_X, 0)
             ArenaZone8:SetPoint("TOP", ArenaZone7, "BOTTOM", 0, 0)
+        end
+        -- All-Star's fifth row, in the gap above the description
+        local extra = _G["ArenaZone" .. ALL_STAR_EXTRA_ROW]
+        if extra and ArenaZone8 then
+            extra:ClearAllPoints()
+            extra:SetPoint("LEFT", ArenaFrame, "LEFT", RATED_X, 0)
+            extra:SetPoint("TOP", ArenaZone8, "BOTTOM", 0, 0)
         end
     end
 
@@ -276,6 +294,9 @@ function ArenaFrame_Update()
     end
     -- The rows a mode keeps; every other row is put away.
     local modeRows = (shuffle and CENTURION_SOLO_SHUFFLE_ROWS) or (allstar and CENTURION_ALL_STAR_ROWS) or nil
+    if not allstar and (ArenaFrame.selection or 0) > MAX_ARENA_BATTLES then
+        ArenaFrame.selection = MAX_ARENA_TEAMS + 1
+    end
     if ArenaFrameFrameLabel then
         if shuffle then
             ArenaFrameFrameLabel:SetText(CENTURION_SOLO_SHUFFLE_TITLE)
@@ -289,9 +310,9 @@ function ArenaFrame_Update()
         ArenaFrameNameHeader:SetText((shuffle and CENTURION_SOLO_SHUFFLE_HEADER) or (allstar and CENTURION_ALL_STAR_HEADER) or ARENA_RATED_BATTLE)
     end
 
-    for i = 1, MAX_ARENA_BATTLES do
+    for i = 1, ALL_STAR_EXTRA_ROW do
         local button = _G["ArenaZone"..i]
-        if button and modeRows and not modeRows[i] then
+        if button and ((modeRows and not modeRows[i]) or (i > MAX_ARENA_BATTLES and not modeRows)) then
             button:Hide()
         elseif button then
             button:Show()
@@ -322,7 +343,8 @@ function ArenaFrame_Update()
     end
 
     -- only practice queues are joinable from this frame (a shuffle's rows are
-    -- all practice rows, alone or as a group)
+    -- all practice rows, alone or as a group); All-Star's fifth row is one too
+    -- (practice index 5, arena slot 4)
     if ArenaFrame.selection and ArenaFrame.selection > MAX_ARENA_TEAMS then
         ArenaFrameJoinButton:Enable()
         ArenaFrameGroupJoinButton:Show()
@@ -344,7 +366,7 @@ function ArenaFrameJoinButton_OnClick(self)
         -- rated 1..4
         JoinBattlefield(ArenaFrame.selection, 1, 1)
     elseif ArenaFrame.selection then
-        -- practice 5..8 → 1..4
+        -- practice 5..8 → 1..4 (All-Star's fifth row 9 → 5)
         local idx = ArenaFrame.selection - MAX_ARENA_TEAMS
         if self:GetID() == GROUPJOIN_BUTTONID then
             JoinBattlefield(idx, 1)
