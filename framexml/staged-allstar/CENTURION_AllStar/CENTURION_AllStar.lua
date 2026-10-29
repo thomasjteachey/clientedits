@@ -575,6 +575,55 @@ local function OnMacroLine(line)
 	end
 end
 
+-- Class on the unit frames ----------------------------------------------------
+-- A swap keeps the same character in view and changes its class byte, which
+-- the client announces only as UNIT_DISPLAYPOWER (the event of
+-- UNIT_FIELD_BYTES_0, where race, class, gender and power type live). The
+-- stock enemy frames (Blizzard_ArenaUI) set an opponent's class circle only
+-- when the client first sees it (ARENA_OPPONENT_UPDATE "seen") or on
+-- UNIT_NAME_UPDATE - and the name the server sends again at a swap gets here
+-- before the class byte does, while UnitClass reads the unit in view (the name
+-- cache only for one out of sight). So the circle stays on an earlier life.
+-- It is set again whenever an opponent's display power changes. Health bars
+-- that an addon colours by class and locks (PlayerFrame, TargetFrame and
+-- FocusFrame under UnitFramesImproved, through its global UnitColor) are
+-- coloured again the same way. Only textures and colours are touched: the
+-- frames are secure, and showing or updating them is not ours to do in combat.
+local function RefreshArenaClass(unit)
+	local id = string.match(unit, "^arena(%d)$")
+	local frame = id and _G["ArenaEnemyFrame" .. id]
+	if ( not frame or not frame.classPortrait ) then
+		return
+	end
+	local _, class = UnitClass(unit)
+	local coords = class and CLASS_ICON_TCOORDS[class]
+	if ( coords ) then
+		frame.classPortrait:SetTexture("Interface\\TargetingFrame\\UI-Classes-Circles")
+		frame.classPortrait:SetTexCoord(unpack(coords))
+	end
+end
+
+local LOCKED_CLASS_BARS = {
+	player = "PlayerFrameHealthBar",
+	target = "TargetFrameHealthBar",
+	focus = "FocusFrameHealthBar",
+}
+
+local function RefreshClassColour(unit)
+	local bar = LOCKED_CLASS_BARS[unit] and _G[LOCKED_CLASS_BARS[unit]]
+	if ( bar and bar.lockColor and type(UnitColor) == "function" and UnitIsPlayer(unit) ) then
+		bar:SetStatusBarColor(UnitColor(unit))
+	end
+end
+
+local function OnClassMaybeChanged(unit)
+	if ( type(unit) ~= "string" ) then
+		return
+	end
+	RefreshArenaClass(unit)
+	RefreshClassColour(unit)
+end
+
 local cleanedAtLogin = false
 
 local listener = CreateFrame("Frame")
@@ -583,7 +632,13 @@ listener:RegisterEvent("PLAYER_REGEN_ENABLED")
 listener:RegisterEvent("ADDON_LOADED")
 listener:RegisterEvent("PLAYER_ENTERING_WORLD")
 listener:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+listener:RegisterEvent("UNIT_DISPLAYPOWER")
+listener:RegisterEvent("UNIT_NAME_UPDATE")
 listener:SetScript("OnEvent", function(self, event, prefix, message)
+	if ( event == "UNIT_DISPLAYPOWER" or event == "UNIT_NAME_UPDATE" ) then
+		OnClassMaybeChanged(prefix)
+		return
+	end
 	if ( event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" ) then
 		if ( OutsideArena() ) then
 			livesFrame:Hide()
