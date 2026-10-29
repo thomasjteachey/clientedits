@@ -165,7 +165,94 @@ livesFrame:SetBackdrop({
 	insets = { left = 4, right = 4, top = 4, bottom = 4 },
 })
 livesFrame:SetBackdropColor(0.03, 0.03, 0.05, 0.82)
+livesFrame:SetClampedToScreen(true)
 livesFrame:Hide()
+
+-- Where it sits. Left alone, under the arena's counters (WorldStateFrame's
+-- AlwaysUpFrame1..n), centred on what they show - the icon to the end of the
+-- text, not the frames themselves, which hang 28 px left of the middle. Dragged,
+-- where it was put (CENTURION_AllStarSettings.pos, for every character); a
+-- right-click puts it back under the counters.
+local function LivesPlaced()
+	local settings = CENTURION_AllStarSettings
+	return type(settings) == "table" and type(settings.pos) == "table" and settings.pos.x and settings.pos.y
+end
+
+local function PlaceLives()
+	if ( LivesPlaced() ) then
+		local pos = CENTURION_AllStarSettings.pos
+		livesFrame:ClearAllPoints()
+		livesFrame:SetPoint("TOP", UIParent, "BOTTOMLEFT", pos.x, pos.y)
+		return
+	end
+
+	local left, right, bottom
+	for i = 1, NUM_ALWAYS_UP_UI_FRAMES or 0 do
+		local counter = _G["AlwaysUpFrame"..i]
+		if ( counter and counter:IsShown() ) then
+			local icon, text = _G["AlwaysUpFrame"..i.."Icon"], _G["AlwaysUpFrame"..i.."Text"]
+			local l = (icon and icon:GetLeft()) or counter:GetLeft()
+			local r = (text and text:GetText() and text:GetText() ~= "" and text:GetRight()) or counter:GetRight()
+			local b = counter:GetBottom()
+			if ( l and r and b ) then
+				left = left and math.min(left, l) or l
+				right = right and math.max(right, r) or r
+				bottom = bottom and math.min(bottom, b) or b
+			end
+		end
+	end
+
+	livesFrame:ClearAllPoints()
+	if ( left ) then
+		livesFrame:SetPoint("TOP", UIParent, "BOTTOMLEFT", (left + right) / 2, bottom - 2)
+	else
+		livesFrame:SetPoint("TOP", UIParent, "TOP", 0, -78)
+	end
+end
+
+livesFrame:SetMovable(true)
+livesFrame:EnableMouse(true)
+livesFrame:RegisterForDrag("LeftButton")
+livesFrame:SetScript("OnDragStart", function(self)
+	self:StartMoving()
+end)
+livesFrame:SetScript("OnDragStop", function(self)
+	self:StopMovingOrSizing()
+	self:SetUserPlaced(false)      -- kept here, not in the client's layout cache
+	if ( type(CENTURION_AllStarSettings) ~= "table" ) then
+		CENTURION_AllStarSettings = {}
+	end
+	local x = self:GetCenter()
+	CENTURION_AllStarSettings.pos = { x = x, y = self:GetTop() }
+	PlaceLives()
+end)
+livesFrame:SetScript("OnMouseUp", function(self, button)
+	if ( button == "RightButton" and type(CENTURION_AllStarSettings) == "table" ) then
+		CENTURION_AllStarSettings.pos = nil
+		PlaceLives()
+	end
+end)
+livesFrame:SetScript("OnEnter", function(self)
+	GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+	GameTooltip:SetText("All-Star lives")
+	GameTooltip:AddLine("Drag to move. Right-click to put it back under the scores.", 1, 1, 1, 1)
+	GameTooltip:Show()
+end)
+livesFrame:SetScript("OnLeave", GameTooltip_Hide)
+
+-- The counters come and go and change width with their text: followed a
+-- couple of times a second while the panel is up and has not been moved.
+local livesPlaceElapsed = 0
+livesFrame:SetScript("OnUpdate", function(self, elapsed)
+	livesPlaceElapsed = livesPlaceElapsed + elapsed
+	if ( livesPlaceElapsed < 0.5 ) then
+		return
+	end
+	livesPlaceElapsed = 0
+	if ( not LivesPlaced() ) then
+		PlaceLives()
+	end
+end)
 
 local livesIcon = livesFrame:CreateTexture(nil, "ARTWORK")
 livesIcon:SetWidth(32)
@@ -267,6 +354,7 @@ local function ShowLives(left, total, classId, name)
 		livesFlashAnim:Play()
 	end
 	livesShownLeft = left
+	PlaceLives()
 	livesFrame:Show()
 end
 
