@@ -95,6 +95,8 @@ local state = {
 
 local BG_RANDOM = 32
 local BG_ICONS = "Interface\\Icons\\"
+-- Centurion's level cap: no level range shown runs past it.
+local MAX_LEVEL = 60
 
 -- What each battleground is about, in a line; anything else gets a plain one.
 local BG_INFO = {
@@ -112,12 +114,14 @@ local BG_INFO = {
 	          text = "Take the island's workshops, docks and hangar, break into the enemy keep and defeat its leader." },
 	[BG_RANDOM] = { icon = "INV_BannerPVP_02", goal = "Any battleground",
 	          text = "Any of the battlegrounds, picked when your match is made." },
-	[100] = { icon = "Spell_Holy_Resurrection", goal = "Small battle",
-	          text = "A small battle fought in the Scarlet Monastery's chapel." },
-	[101] = { icon = "Achievement_Zone_Blackrock_01", goal = "Battle",
-	          text = "A battle for the throne room deep in Blackrock Mountain." },
-	[102] = { icon = "Achievement_Arena_5v5_7", goal = "Battle",
-	          text = "A large battle in the halls of the Obsidian Colosseum." },
+	-- Whitemane's three are deathmatches (owner 2026-10-29: "the objective for
+	-- the deathmatch bgs should say deathmatch").
+	[100] = { icon = "Spell_Holy_Resurrection", goal = "Deathmatch",
+	          text = "A small deathmatch fought in the Scarlet Monastery's chapel." },
+	[101] = { icon = "Achievement_Zone_Blackrock_01", goal = "Deathmatch",
+	          text = "A deathmatch for the throne room deep in Blackrock Mountain." },
+	[102] = { icon = "Achievement_Arena_5v5_7", goal = "Deathmatch",
+	          text = "A large deathmatch in the halls of the Obsidian Colosseum." },
 	[104] = { icon = "INV_BannerPVP_01", goal = "Deathmatch",
 	          text = "A deathmatch across the sands of Tanaris." },
 	[105] = { icon = "Achievement_Zone_CrystalSong_01", goal = "Survival",
@@ -1756,13 +1760,18 @@ local function DrawBattlemaster()
 		art = BG_FALLBACK_SCREEN
 	end
 	plateText:SetText(bg.name)
-	local levels = bg.minLevel == bg.maxLevel and tostring(bg.minLevel) or (bg.minLevel .. "-" .. bg.maxLevel)
+	-- The realm stops at 60 (owner: "the max level is 60"): a range never reads
+	-- past it, and one level reads as one ("level 60", not "levels 60-60").
+	local maxLevel = math.min(bg.maxLevel, MAX_LEVEL)
+	local minLevel = math.min(bg.minLevel, maxLevel)
+	local single = minLevel == maxLevel
+	local levels = single and tostring(minLevel) or (minLevel .. "-" .. maxLevel)
 	DrawPoster({
 		banner = art, cy = 0.5,
 		icon = BG_ICONS .. (info.icon or "INV_BannerPVP_01"),
 		title = bg.name,
 		small = string.len(bg.name) > 22,
-		sub = string.format("%d vs %d  -  levels %s", bg.perTeam, bg.perTeam, levels),
+		sub = string.format("%d vs %d  -  %s %s", bg.perTeam, bg.perTeam, single and "level" or "levels", levels),
 		body = info.text or "A battleground: two sides, one objective.",
 		facts = { { "Team size", bg.perTeam .. " players" }, { "Levels", levels },
 			{ "Objective", info.goal or "Win" } },

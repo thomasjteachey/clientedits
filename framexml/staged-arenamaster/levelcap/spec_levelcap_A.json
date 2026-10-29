@@ -1,0 +1,11 @@
+{
+  "name": "patch-enUS-A",
+  "change": "levelcap-60",
+  "stage": "/tmp/centmode/levelcap/stageA",
+  "backup_dir": "/home/brokilodeluxe/patch-backups",
+  "files": {
+    "DBFilesClient\\PvpDifficulty.dbc": "0038f6f96ba4c9717b07cb7a036ab0af",
+    "DBFilesClient\\BattlemasterList.dbc": "e338ef9eddeab2112236689f0e8768fb",
+    "DBFilesClient\\Map.dbc": "cdb446b77e95b8b8d5068e0f15d302f8"
+  }
+}
