@@ -1,6 +1,7 @@
 #!/bin/bash
 # addons_replace_replay.sh: put the staged CENTURION_Replay files into the live
-# addons.zip (replacing the ones there, adding CenturionReplaySpectate.lua),
+# addons.zip (replacing the ones there, adding CenturionReplaySpectate.lua and
+# CenturionReplayScore.lua),
 # every other entry byte for byte as it was, then bump addons.version LAST and
 # read both back over HTTP. Run on the game box from the folder holding the
 # staged CENTURION_Replay/ (copied up from clientedits/framexml/staged-replay).
@@ -9,7 +10,7 @@ TAG=replay-spectate
 P=/var/www/html/downloads/patches
 W=$(pwd)
 D=CENTURION_Replay
-FILES="CENTURION_Replay.toc SunwellAS.lua CenturionReplaySpectate.lua"
+FILES="CENTURION_Replay.toc SunwellAS.lua CenturionReplaySpectate.lua CenturionReplayScore.lua"
 for f in $FILES; do [ -f "$D/$f" ] || { echo "no $D/$f in $W"; exit 1; }; done
 CUR=$(cat $P/addons.version)
 cp -p $P/addons.zip live.zip
@@ -22,7 +23,7 @@ for f in $FILES; do cp $D/$f stage/$D/; done
 (cd new && unzip -q ../addons.zip)
 unzip -tq addons.zip
 for f in $FILES; do cmp -s new/$D/$f $D/$f && echo "new $D/$f in the zip: ok" || { echo "NEW FILE MISMATCH $f"; exit 1; }; done
-skip=" ./$D/\(CENTURION_Replay\.toc\|SunwellAS\.lua\|CenturionReplaySpectate\.lua\)\$"
+skip=" ./$D/\(CENTURION_Replay\.toc\|SunwellAS\.lua\|CenturionReplaySpectate\.lua\|CenturionReplayScore\.lua\)\$"
 (cd old && find . -type f | sort | xargs -d '\n' md5sum) | grep -v "$skip" > old.md5
 (cd new && find . -type f | sort | xargs -d '\n' md5sum) | grep -v "$skip" > new.md5
 cmp -s old.md5 new.md5 && echo "other entries: $(wc -l < old.md5) identical" || { echo "OTHER ENTRIES CHANGED"; diff old.md5 new.md5 | head; exit 1; }
