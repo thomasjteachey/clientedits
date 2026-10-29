@@ -253,8 +253,12 @@ function UnitLevel(unit) if unit == "focus" then return 80 end return 1 end
 MOCK.party = {}
 function UnitGUID(unit) if unit == "focus" then return MOCK.focus end
 	if unit == "focustarget" then return MOCK.focusTarget end
+	if unit == "target" then return MOCK.target end
+	if unit == "targettarget" then return MOCK.targetTarget end
 	local n = type(unit) == "string" and tonumber(unit:match("^party(%d)$")) if n then return MOCK.party[n] end return nil end
 for i = 1, 4 do local f = CreateFrame("Button", "PartyMemberFrame" .. i, UIParent); f.unit = "party" .. i end
+TargetFrame = CreateFrame("Button", "TargetFrame", UIParent); TargetFrame.unit = "target"
+TargetFrameToT = CreateFrame("Button", "TargetFrameToT", UIParent); TargetFrameToT.unit = "targettarget"
 function CloseDropDownMenus() MOCK.menusClosed = (MOCK.menusClosed or 0) + 1 end
 function InCombatLockdown() return MOCK.combat end
 CENTURION_SQUAD_NAMES = { [0] = "Gold Team", [1] = "Green Team", [2] = "Blue Team", [3] = "Purple Team" }

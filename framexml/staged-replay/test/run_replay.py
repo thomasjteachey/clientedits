@@ -200,6 +200,14 @@ check(g.MOCK.following == sh[1] and (g.MOCK.menusClosed or 0) > 0, 'a right-clic
 pf._scripts.PostClick(pf, 'LeftButton')
 check(g.MOCK.following == sh[1], 'a left-click on it is just a target')
 g.CenturionReplaySpectate_Start(sh[2])
+g.MOCK.target = sh[4]
+g.TargetFrame._scripts.PostClick(g.TargetFrame, 'RightButton')
+check(g.MOCK.following == sh[4], 'a right-click on the target frame spectates their target: %s' % g.MOCK.following)
+g.MOCK.targetTarget = sh[5]
+g.TargetFrameToT._scripts.PostClick(g.TargetFrameToT, 'RightButton')
+check(g.MOCK.following == sh[5], 'and on the target-of-target frame, theirs: %s' % g.MOCK.following)
+g.MOCK.targetTarget = None
+g.CenturionReplaySpectate_Start(sh[2])
 
 # the echo of our own whisper does not break the feed parser
 msg('SPECTATE ' + sh[2])

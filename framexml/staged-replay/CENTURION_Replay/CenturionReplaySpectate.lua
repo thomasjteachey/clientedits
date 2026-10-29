@@ -607,8 +607,7 @@ for squad = 0, 3 do
 end
 
 -- The party frames too: they are the watched player's teammates (the
--- server's party list), so a right-click spectates that teammate instead of
--- opening the party menu.
+-- server's party list).
 local function ReplayGuidOf(unit)
     local guid = UnitGUID and UnitGUID(unit)
     if not guid or not ATPlayers then
@@ -625,23 +624,33 @@ local function ReplayGuidOf(unit)
     return nil
 end
 
-for index = 1, 4 do
-    local frame = _G["PartyMemberFrame" .. index]
-    if frame and frame.HookScript then
-        frame:HookScript("PostClick", function(self, mouseButton)
-            if mouseButton ~= "RightButton" or not active then
-                return
-            end
-            local guid = ReplayGuidOf(self.unit or ("party" .. index))
-            if guid and CenturionReplaySpectate_Start then
-                if CloseDropDownMenus then
-                    CloseDropDownMenus()
-                end
-                CenturionReplaySpectate_Start(guid)
-            end
-        end)
+-- A right-click on a unit frame (theirs: party, target, target of target)
+-- spectates that player instead of opening the frame's menu.
+local function SpectateOnRightClick(frame, unit)
+    if not frame or not frame.HookScript then
+        return
     end
+    frame:HookScript("PostClick", function(self, mouseButton)
+        if mouseButton ~= "RightButton" or not active then
+            return
+        end
+        local guid = ReplayGuidOf(self.unit or unit)
+        if guid and CenturionReplaySpectate_Start then
+            if CloseDropDownMenus then
+                CloseDropDownMenus()
+            end
+            CenturionReplaySpectate_Start(guid)
+        end
+    end)
 end
+
+for index = 1, 4 do
+    SpectateOnRightClick(_G["PartyMemberFrame" .. index], "party" .. index)
+end
+-- Their target and their target's target (3.3.5 names the second
+-- TargetFrameToT; older builds TargetofTargetFrame).
+SpectateOnRightClick(TargetFrame, "target")
+SpectateOnRightClick(_G["TargetFrameToT"] or _G["TargetofTargetFrame"], "targettarget")
 
 -- For CenturionReplayScore.lua: while the scoreboard is open and nobody is
 -- spectated, the same feed with no side of your own (so no enemy frames
