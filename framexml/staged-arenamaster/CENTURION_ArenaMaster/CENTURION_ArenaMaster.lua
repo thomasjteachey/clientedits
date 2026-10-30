@@ -604,6 +604,19 @@ noteSub:SetJustifyV("TOP")
 At(noteSub, 46, 450)
 noteSub:SetText("Bot-filled matches are never saved.")
 
+-- The server says with every replay list whether this realm also saves the
+-- matches bots played in (RPL:BOTS:<0|1>, ArenaReplay.RecordBotMatches). On the
+-- frame, not a new local: this file is at Lua's 200-local limit.
+function am.SetReplayNote(withBots)
+	if withBots then
+		noteText:SetText("Every arena match is recorded, bots or not.")
+		noteSub:SetText("Matches with bots in them are saved too.")
+	else
+		noteText:SetText("Replays are only recorded when both teams are fully human.")
+		noteSub:SetText("Bot-filled matches are never saved.")
+	end
+end
+
 local replayLeft = { matchLabel, matchBox, matchWatch, noteRule, noteIcon, noteText, noteSub }
 
 ------------------------------------------------------------------
@@ -2652,6 +2665,10 @@ end
 
 local function OnReplayLine(parts)
 	local what = parts[2]
+	if what == "BOTS" then
+		am.SetReplayNote(parts[3] == "1")
+		return
+	end
 	if what == "BEGIN" then
 		state.loading[parts[3]] = {}
 		state.receiving = parts[3]
