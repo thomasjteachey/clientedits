@@ -46,6 +46,7 @@
 #include "gluebridge.h"
 #include "nametag.h"
 #include "rulerelax.h"
+#include "gcdtempo.h"
 #include "sndguard.h"
 #include "spectate.h"
 #include "unitbars.h"
@@ -531,8 +532,15 @@ static void Install(HMODULE self)
 
     // Aura-gated waiver of client-side spell rules (the Valra set's "no weapon
     // requirement"): its own [RuleRelax] section, ON by default keyed on 90217.
+    // Also Violet Hold's Point Blank (94346, no hunter min range) and Untamed
+    // (94361, druid forms through stun/fear/confuse).
     RuleRelax_LoadSettings(g_dir);
     RuleRelax_Install();
+
+    // Violet Hold's Boon of Tempo: 0.1 sec off the client's own GCD per stack
+    // of aura 94318, floor 0.5 sec, the same cut the server makes. [GcdTempo], ON.
+    GcdTempo_LoadSettings(g_dir);
+    GcdTempo_Install();
 
     // A NaN sound position crashed the client in FMOD's 3D pan (ERROR #132 at
     // 0x0094BF6B); that channel now pans centre instead. [SoundGuard], ON.

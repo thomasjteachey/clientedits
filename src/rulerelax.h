@@ -8,7 +8,11 @@
 // keep. This module closes that gap: the rule stays intact in the data, and is
 // waived at runtime only for a player carrying a configured aura.
 //
-// See rulerelax.cpp for the reversing notes and the open measurement.
+// Rules: "weapon" (equipped-weapon requirement, aura 90217), "pointblank"
+// (hunter minimum range, Violet Hold aura 94346) and "untamed" (druid forms
+// through stun/fear/confuse, Violet Hold aura 94361). Each installs on its own.
+//
+// See rulerelax.cpp, docs/RULE_RELAX_RE.md and docs/VH_CLASS_BOONS_RE.md.
 #pragma once
 
 // Read [RuleRelax] from AnimSpeedFix.ini (dir = folder of this DLL, with the

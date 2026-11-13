@@ -58,6 +58,12 @@ compared to effect ids 47 and 78).
 +0x11C  Effect1                        (field 71)
 ```
 
+**Correction (2026-11-13):** "raw field order" holds only up to field 135.
+Each localized string is one pointer in memory, so fields ≥ 204 sit 0x100 bytes
+earlier — e.g. `SpellFamilyName` (DBC 208) is at `+0x240`, `PreventionType`
+(DBC 214) at `+0x258`, record size `0x2A8`. Details and the two Violet Hold
+rules (`pointblank`, `untamed`) that use them: `VH_CLASS_BOONS_RE.md`.
+
 ## Why there is no "weapon check" address here
 
 The equipped-item test could not be pinned to its own function statically.
