@@ -8,9 +8,13 @@
 -- the asked-for GUID with the stored combo target). So the count is read from
 -- the target first and from the player second.
 --
--- For a rogue with the talent the points are drawn in a row under the player
--- frame, and the stock target-frame pips (ComboFrame) stay hidden. Everyone
--- else keeps the stock ComboFrame untouched.
+-- Where the points show is a setting on the Centurion options page (Interface >
+-- Game > Centurion), saved account-wide through RegisterForSave in
+-- CENTURION_COMBO_POINTS:
+--   "dynamic"   (default) a row under the player frame for a rogue with the
+--               talent, the stock target-frame pips (ComboFrame) for everyone else
+--   "character" always the row under the player frame
+--   "target"    always the stock target-frame pips
 
 local UNFINISHED_BUSINESS = 81500
 local SCALE = 1.15
@@ -52,8 +56,37 @@ local function KnowsUnfinishedBusiness()
 	return false
 end
 
+-- Saved with the account's SavedVariables.lua; loaded after FrameXML is read,
+-- so it is only ever looked at through Mode().
+RegisterForSave("CENTURION_COMBO_POINTS")
+
+local MODES = {
+	{ value = "dynamic", text = "Dynamic" },
+	{ value = "character", text = "Under your character frame" },
+	{ value = "target", text = "On your target's frame" },
+}
+
+local function Mode()
+	local mode = CENTURION_COMBO_POINTS
+	if mode == "character" or mode == "target" then
+		return mode
+	end
+	return "dynamic"
+end
+
+-- True while the row under the player frame shows the points (and the stock
+-- target-frame pips stand down).
 local function Active()
-	return owned and PlayerFrame.unit == "player"
+	if PlayerFrame.unit ~= "player" then
+		return false
+	end
+	local mode = Mode()
+	if mode == "character" then
+		return true
+	elseif mode == "target" then
+		return false
+	end
+	return owned
 end
 
 local function CurrentPoints()
@@ -125,6 +158,7 @@ function ComboFrame_Update()
 	UpdateRow()
 end
 
+row:RegisterEvent("VARIABLES_LOADED")
 row:RegisterEvent("PLAYER_ENTERING_WORLD")
 row:RegisterEvent("PLAYER_TALENT_UPDATE")
 row:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
@@ -144,3 +178,67 @@ row:SetScript("OnEvent", function(self, event, unit)
 	end
 	ComboFrame_Update()
 end)
+
+-- The setting, on the Centurion options page CenturionNameTags.lua builds
+-- (it loads earlier in FrameXML.toc). Under the name marker checkbox.
+local panel = CenturionOptionsPanel
+if panel then
+	local header = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	if CenturionNameTagsCheck then
+		header:SetPoint("TOPLEFT", CenturionNameTagsCheck, "BOTTOMLEFT", 2, -36)
+	else
+		header:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -90)
+	end
+	header:SetText("Combo points")
+
+	local dropDown = CreateFrame("Frame", "CenturionComboPointsDropDown", panel, "UIDropDownMenuTemplate")
+	dropDown:SetPoint("TOPLEFT", header, "BOTTOMLEFT", -16, -4)
+	UIDropDownMenu_SetWidth(dropDown, 200)
+
+	local hint = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+	hint:SetPoint("TOPLEFT", dropDown, "BOTTOMLEFT", 18, -2)
+	hint:SetPoint("RIGHT", panel, "RIGHT", -32, 0)
+	hint:SetJustifyH("LEFT")
+
+	local function ModeText(value)
+		for _, m in ipairs(MODES) do
+			if m.value == value then
+				return m.text
+			end
+		end
+		return MODES[1].text
+	end
+
+	local function Refresh()
+		local mode = Mode()
+		UIDropDownMenu_SetSelectedValue(dropDown, mode)
+		UIDropDownMenu_SetText(dropDown, ModeText(mode))
+		if mode == "dynamic" then
+			hint:SetText("Under your character frame while you have Unfinished Business, on your target's frame otherwise.")
+		elseif mode == "character" then
+			hint:SetText("Always in a row under your character frame.")
+		else
+			hint:SetText("Always on your target's frame, the standard place.")
+		end
+	end
+
+	local function OnSelect(button)
+		CENTURION_COMBO_POINTS = button.value
+		Refresh()
+		ComboFrame_Update()
+	end
+
+	UIDropDownMenu_Initialize(dropDown, function()
+		for _, m in ipairs(MODES) do
+			local info = UIDropDownMenu_CreateInfo()
+			info.text = m.text
+			info.value = m.value
+			info.func = OnSelect
+			info.checked = (Mode() == m.value)
+			UIDropDownMenu_AddButton(info)
+		end
+	end)
+
+	panel:HookScript("OnShow", Refresh)
+	Refresh()
+end

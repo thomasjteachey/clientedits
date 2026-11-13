@@ -32,6 +32,11 @@ local function newFrame(name)
   function f:GetName() return self.name end
   function f:RegisterEvent(e) self.events[e] = true end
   function f:SetScript(k, fn) self.scripts[k] = fn end
+  function f:HookScript(k, fn) self.scripts[k] = fn end
+  function f:CreateFontString() local fs = { text = "" }
+    function fs:SetPoint() end function fs:SetJustifyH() end
+    function fs:SetText(t) self.text = t end function fs:GetText() return self.text end
+    return fs end
   if name then _G[name] = f end
   frames[#frames + 1] = f
   return f
@@ -44,6 +49,19 @@ function CreateFrame(kind, name, parent, template)
   return f
 end
 PlayerFrame = newFrame("PlayerFrame"); PlayerFrame.unit = "player"
+CenturionOptionsPanel = newFrame("CenturionOptionsPanel")
+CenturionNameTagsCheck = newFrame("CenturionNameTagsCheck")
+saved = {}
+function RegisterForSave(name) saved[#saved + 1] = name end
+dd = { items = {} }
+function UIDropDownMenu_SetWidth() end
+function UIDropDownMenu_SetSelectedValue(f, v) dd.selected = v end
+function UIDropDownMenu_SetText(f, t) dd.text = t end
+function UIDropDownMenu_Initialize(f, fn) dd.init = fn end
+function UIDropDownMenu_CreateInfo() return {} end
+function UIDropDownMenu_AddButton(info) dd.items[#dd.items + 1] = info end
+function openMenu() dd.items = {}; dd.init() end
+function pick(i) local info = dd.items[i]; info.func({ value = info.value }) end
 ComboFrame = newFrame("ComboFrame"); ComboFrame.shown = false
 for i = 1, 5 do newFrame("ComboPoint" .. i); newFrame("ComboPoint" .. i .. "Highlight"); newFrame("ComboPoint" .. i .. "Shine") end
 function UIFrameFadeIn(f) f:Show() end
@@ -135,6 +153,31 @@ check(G.CenturionPlayerComboFrame.shown, 'out of vehicle: row back')
 # 8. talent removed (respec): back to stock
 L.execute('state.talentRank = 0; state.comboGuid = "MOB2"; fire("PLAYER_TALENT_UPDATE")')
 check(not G.CenturionPlayerComboFrame.shown and G.ComboFrame.shown, 'talent removed: stock pips back, row gone')
+
+# 10. the setting: saved, defaults to dynamic, every mode drives the right frame
+L, G = fresh()
+check(L.eval('saved[1] == "CENTURION_COMBO_POINTS"'), 'setting registered for save')
+check(L.eval('dd.selected') == 'dynamic' and L.eval('dd.text') == 'Dynamic', 'default is Dynamic')
+L.execute('openMenu()')
+check(L.eval('#dd.items') == 3 and L.eval('dd.items[1].checked') is True, 'menu lists 3 modes, Dynamic checked')
+# a rogue WITHOUT the talent, points on the target
+L.execute('state.points, state.target, state.comboGuid = 3, "MOB1", "MOB1"; fire("PLAYER_ENTERING_WORLD")')
+check(G.ComboFrame.shown and not G.CenturionPlayerComboFrame.shown, 'dynamic, no talent: target frame')
+L.execute('openMenu(); pick(2)')
+check(L.eval('CENTURION_COMBO_POINTS') == 'character' and L.eval('dd.text') == 'Under your character frame', 'picked Character: saved + shown')
+check(not G.ComboFrame.shown and G.CenturionPlayerComboFrame.shown and L.eval('lit()') == 3, 'character mode: row with 3, target pips hidden (applies at once)')
+L.execute('openMenu(); pick(3)')
+check(G.ComboFrame.shown and not G.CenturionPlayerComboFrame.shown, 'target mode: target frame, row hidden')
+# a rogue WITH the talent in target mode keeps the stock pips
+L.execute('state.talentRank = 1; fire("PLAYER_TALENT_UPDATE")')
+check(G.ComboFrame.shown and not G.CenturionPlayerComboFrame.shown, 'target mode overrides the talent')
+L.execute('openMenu(); pick(1)')
+check(not G.ComboFrame.shown and G.CenturionPlayerComboFrame.shown, 'back to dynamic with the talent: row')
+# a saved value arriving with VARIABLES_LOADED
+L.execute('CENTURION_COMBO_POINTS = "target"; fire("VARIABLES_LOADED")')
+check(G.ComboFrame.shown and not G.CenturionPlayerComboFrame.shown, 'saved "target" honoured after VARIABLES_LOADED')
+L.execute('CENTURION_COMBO_POINTS = "garbage"; ComboFrame_Update()')
+check(G.CenturionPlayerComboFrame.shown, 'unknown saved value falls back to dynamic')
 
 # 9. anchored to the player frame
 check(L.eval('CenturionPlayerComboFrame.point[2] == PlayerFrame'), 'row anchored to PlayerFrame')
