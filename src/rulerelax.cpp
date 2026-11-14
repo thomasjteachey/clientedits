@@ -90,6 +90,30 @@
 //                               (errors 108 STUNNED / 34 FLEEING / 26 CONFUSED)
 //                   0x0080B5D0  usability predicate (button dims while control
 //                               is lost - fear/confuse clear "has control")
+//
+// "fieldmedic" (2026-11-14) aura 94383. A hunter's damaging shots (family 9,
+// DmgClass 3, nothing but damage effects - the same predicate as the server's
+// VioletHoldClassBoons::ShootsAllies: Auto Shot, Arcane Shot, Multi-Shot,
+// Aimed Shot, Kill Shot...) may be cast at a friendly unit. The refusal is in
+// the unit-target acceptor 0x0080BC80: implicit target 6 (TARGET_UNIT_TARGET_
+// ENEMY) becomes TARGET_FLAG_UNIT_ENEMY (0x80) in the pending-cast flags
+// 0x00D3F4E0, and that branch accepts a unit only if CanAttack 0x00729740 says
+// so. A friend falls through, the cast function reports error 12
+// (SPELL_FAILED_BAD_TARGETS, "Invalid target") at 0x0080D7E1 and nothing is
+// sent. The waiver swaps 0x80 for the client's own UNIT_ALLY flag (0x100) for
+// the one call when the unit is not attackable, so the client's own ally branch
+// (CanAssist 0x007293D0, then the normal range check) decides. Plus two
+// cosmetic halves: 0x00809610 (IsActionInRange / IsSpellInRange: range tint on
+// a friend) and the usability predicate's target-aura-state block (Kill Shot).
+//
+// "secondcoming" (2026-11-14) aura 94386. Priest Resurrection (family 6 with a
+// RESURRECT_NEW 113 effect) is castable in combat and instant. In combat: clear
+// SPELL_ATTR0_CANT_USED_IN_COMBAT on the record copy for the caster-state check
+// 0x00739650 (error 1 AFFECTING_COMBAT at 0x0073A19B) and the usability
+// predicate 0x0080B5D0 (button dims). Instant: the active player's cast-time
+// calculator 0x007FF180 (move check, send, local cast prediction, tooltip,
+// GetSpellInfo) and CGPlayer's cast-time virtual 0x006D68D0 (cast-start
+// visual) report 0 for a holder.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -201,6 +225,144 @@ static const int kRec_AttributesEx5   = 0x024;   // field 9
 static const int kRec_ApplyAuraName1  = 0x17C;   // fields 95..97, raw layout
 static const int kRec_SpellFamilyName = 0x240;   // DBC field 208, in-memory 144
 
+// --- Field Medic -------------------------------------------------------------
+//
+// THE refusal: the unit-target acceptor. __cdecl(CGObject* obj, CastTargets* ct)
+// -> bool in al, caller cleans 8. ct == NULL means the pending cast at
+// 0x00D3F4E4. It refetches the record itself (id at ct+0x20, caster guid at
+// ct+0x10) and walks the still-needed target flags in the global 0x00D3F4E0:
+//   0x8 party / 0x4 raid / 0x100 ally  -> CanAssist 0x007293D0   (0x0080BE83..)
+//   0x80 enemy                         -> CanAttack 0x00729740   (0x0080BF54)
+//   0x2 any unit, 0x8000/0x200 corpses, 0x10000 minipet ...
+// The branch that accepts the unit clears ITS bit, stores the guid, runs the
+// range check (0x00803850 -> errors 97 / 128 at 0x0080C2DE, restoring the
+// flags from entry on failure) and, when no bits are left, sends the cast
+// (0x0080AC90). A friend under 0x80 alone matches nothing: returns 0 silently,
+// 0x0080C790 returns 0, and 0x0080CCE0 reports 12 BAD_TARGETS (11 with no
+// target) through 0x00808200 at 0x0080D755. Nine callers: the cast path
+// (0x0080CBC1 / 0x0080CC0C / 0x0080CC2C in 0x0080C790), clicking a unit while
+// the spell cursor is up (0x00524CE9 in the target handler 0x00524BF0),
+// 0x0080DBF4, 0x0080DD9C, 0x005167C8, 0x00521504 (pet), 0x007118D9.
+//
+// Steals push ebp / mov ebp,esp / sub esp,0x2B0 = 9 bytes, no rel ops.
+static const DWORD kTryTarget       = 0x0080BC80;
+static const BYTE  kTryTargetSig[]  = { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xB0, 0x02, 0x00, 0x00, 0x56, 0x8B, 0x75, 0x0C };
+static const size_t kTryTargetStolen = 9;
+
+// Explicit-target + range pre-check. __cdecl(caster, SpellRec*, guidLo, guidHi,
+// bool* inRange, bool showError, errSink) -> bool, caller cleans 0x1C. Same
+// flag walk, but local: Targets (rec+0x40, a WORD) OR the implicit-target map.
+// Returns 0 = "not a target this spell takes" (no error), 1 + *inRange. Callers
+// all pass a stack copy of the record: the cast path 0x0080D6AD (0 just skips
+// to the acceptor above, so this half is NOT the refusal), the action bar's
+// IsActionInRange 0x005A9596, Lua IsSpellInRange 0x00541D6E, 0x0051CAB2,
+// 0x005E55B6 (0 = nil = no range tint at all on a friend).
+// Steals push ebp / mov ebp,esp / push ecx / mov eax,[ebp+0x10] = 7 bytes.
+static const DWORD kTargetCheck       = 0x00809610;
+static const BYTE  kTargetCheckSig[]  = { 0x55, 0x8B, 0xEC, 0x51, 0x8B, 0x45, 0x10, 0x8B, 0x4D, 0x14, 0x8B, 0xD0 };
+static const size_t kTargetCheckStolen = 7;
+
+// Reaction tests, called, never patched.
+//   CanAttack  __thiscall(unit, target) -> bool, ret 4
+//   CanAssist  __thiscall(unit, target, int flag) -> bool, ret 8
+static const DWORD kCanAttack     = 0x00729740;
+static const BYTE  kCanAttackSig[] = { 0x55, 0x8B, 0xEC, 0x53, 0x8B, 0xD9, 0x8B, 0x43, 0x08 };
+static const DWORD kCanAssist     = 0x007293D0;
+static const BYTE  kCanAssistSig[] = { 0x55, 0x8B, 0xEC, 0x53, 0x8B, 0x5D, 0x08, 0x8B, 0x83, 0xD0, 0x00, 0x00, 0x00 };
+
+// Spell DB record copy: __thiscall(db = 0x00AD49D0, id, buf) -> nonzero on
+// success, ret 8. Copies 0x2A8 bytes (rep movsd 0xAA dwords, or the
+// decompressing path 0x004CFBB0 with the same size). The client brackets it
+// with 0x008B7DA0 / 0x005EEB70, which are `mov eax, ecx; ret` and `ret`.
+static const DWORD kSpellDb       = 0x00AD49D0;
+static const DWORD kSpellDbGet    = 0x004CFD20;
+static const BYTE  kSpellDbGetSig[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x51, 0x10, 0x8B, 0x45, 0x08, 0x3B, 0xC2 };
+static const size_t kSpellRecSize = 0x2A8;
+
+// ObjectPtr: __cdecl(guidLo, guidHi, typeMask, file, line) -> obj or NULL. It
+// tests typeMask against the object's OBJECT_FIELD_TYPE itself; file/line are
+// never read (same call playercollide.cpp makes with three args).
+static const DWORD kObjectPtr     = 0x004D4DB0;
+static const BYTE  kObjectPtrSig[] = { 0x55, 0x8B, 0xEC, 0x64, 0x8B, 0x0D, 0x2C };
+
+static const DWORD kCastTargetFlags = 0x00D3F4E0;  // still-needed TARGET_FLAG_* of the pending cast
+static const DWORD kPendingCast     = 0x00D3F4E4;  // CastTargets* of the pending cast
+static const DWORD kCurrentTarget   = 0x00BD07B0;  // selected target guid (lo, hi)
+
+static const DWORD kTargetFlagUnit      = 0x0002;
+static const DWORD kTargetFlagRaid      = 0x0004;
+static const DWORD kTargetFlagParty     = 0x0008;
+static const DWORD kTargetFlagUnitEnemy = 0x0080;
+static const DWORD kTargetFlagUnitAlly  = 0x0100;
+
+static const DWORD kTypeMaskUnit = 0x8;
+
+static const int kCast_CasterGuid = 0x10;
+static const int kCast_SpellId    = 0x20;
+
+static const int kRec_Targets             = 0x040;  // field 16, read as a WORD
+static const int kRec_TargetAuraState     = 0x054;  // field 21
+static const int kRec_TargetAuraStateNot  = 0x05C;  // field 23
+static const int kRec_TargetAuraSpell     = 0x064;  // field 25
+static const int kRec_ExcludeTargetAura   = 0x06C;  // field 27
+static const int kRec_Effect1             = 0x11C;  // fields 71..73
+static const int kRec_ImplicitTargetA1    = 0x158;  // field 86
+// DBC 213 -> in-memory 149. Verified: 0x00805DE7 reads [rec+0x254] and skips
+// GCD haste for 2 (melee) and 3 (ranged) - DmgClass semantics.
+static const int kRec_DmgClass            = 0x254;
+
+static const int kDmgClassRanged          = 3;
+static const int kTargetUnitTargetEnemy   = 6;
+static const int kTargetUnitTargetAlly    = 21;
+
+// --- Second Coming -----------------------------------------------------------
+//
+// In-combat refusal: SPELL_ATTR0_CANT_USED_IN_COMBAT (Attributes 0x10000000)
+// is tested on a spell record in exactly two places (byte scan of every
+// `test …, 0x10000000` and every `mov r32, 0x10000000` in the spell code):
+//   0x0073A169  caster-state check 0x00739650 (cast path): Attributes & edi
+//               (edi = 0x10000000 from 0x0073A132), UNIT_FLAGS & 0x80000 (in
+//               combat), unless aura type 262 affects the spell (0x0072AAF0)
+//               -> error 1 SPELL_FAILED_AFFECTING_COMBAT at 0x0073A19B
+//   0x0080B89A  usability predicate 0x0080B5D0: same test -> button dims
+// Both receive the caller's record copy, so the bit is cleared for the call
+// (the Untamed pattern; both functions are already detoured for it).
+//
+// Cast time: SpellCastTimes (DB object 0x00AD4748, rows read inline through
+// 0x00AD4754 / 0x00AD4758 / 0x00AD4768) is read from rec+0x70 in exactly three
+// functions:
+//   0x007FF180  __cdecl(rec, a2, a3, a4) -> ms. The active player's cast time:
+//               base, level scaling, CASTING_TIME spellmods (0x007FDB50 type
+//               10), haste. Callers: caster-state move check 0x0073A0BB (error
+//               51 MOVING), send function 0x0080B081 (MOVING again) and its
+//               local cast prediction 0x007FA450 (0x0080B406), 0x00809FD5,
+//               Lua GetSpellInfo 0x00540C6A, tooltip builder 0x00624471.
+//   0x006D68D0  CGPlayer virtual (vtable 0x00A326C8 + 0x148), __thiscall(unit,
+//               rec) -> ms; asked by the cast-start visual 0x0073B140 at
+//               0x0073B275 ("instant?" -> which precast animation).
+//   0x0071AD20  CGUnit version of the same virtual (vtable 0x00A34D90 + 0x148)
+//               - creatures; a priest holding the aura is always a CGPlayer.
+// Hooked: the first two, returning 0 for a holder.
+//
+// Steals push ebp / mov ebp,esp / sub esp,0xC = 6 bytes in both, no rel ops.
+static const DWORD kCastTime        = 0x007FF180;
+static const BYTE  kCastTimeSig[]   = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C, 0x57, 0x8B, 0x7D, 0x08, 0x85, 0xFF };
+static const size_t kCastTimeStolen = 6;
+
+static const DWORD kPlayerCastTime       = 0x006D68D0;
+static const BYTE  kPlayerCastTimeSig[]  = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C, 0x53, 0x8B, 0x5D, 0x08, 0x85, 0xDB };
+static const size_t kPlayerCastTimeStolen = 6;
+
+// GetActivePlayerGuid: __cdecl () -> u64 in edx:eax (same as playercollide).
+static const DWORD kGetActiveGuid   = 0x004D3790;
+static const BYTE  kGetActiveSig[]  = { 0x64, 0x8B, 0x0D, 0x2C, 0x00, 0x00, 0x00, 0xA1 };
+
+static const int   kRec_Attributes          = 0x010;  // field 4
+static const DWORD kAttr0CantUsedInCombat   = 0x10000000;
+static const DWORD kUnitFlagInCombat        = 0x00080000;
+static const int   kFamilyPriest            = 6;
+static const int   kEffectResurrectNew      = 113;
+
 static const int kFamilyDruid    = 7;
 static const int kFamilyHunter   = 9;
 static const int kAuraModShapeshift = 36;
@@ -223,6 +385,17 @@ typedef int  (__cdecl   *RangeCalc_t)(void* caster, void* rec, float* minRange, 
                                       int friendly, void* target);
 typedef bool (__thiscall *CasterState_t)(void* unit, void* errSink, void* rec, void* a3);
 typedef bool (__cdecl   *Usable_t)(void* unit, void* rec, void* a3, void* a4, void* a5);
+typedef bool (__cdecl   *TryTarget_t)(void* obj, void* castTargets);
+typedef bool (__cdecl   *TargetCheck_t)(void* caster, void* rec, DWORD guidLo, DWORD guidHi,
+                                        void* inRange, int showError, void* errSink);
+typedef bool (__thiscall *CanAttack_t)(void* unit, void* target);
+typedef bool (__thiscall *CanAssist_t)(void* unit, void* target, int flag);
+typedef int  (__thiscall *SpellDbGet_t)(void* db, int spellId, void* buf);
+typedef void* (__cdecl  *ObjectPtr_t)(DWORD guidLo, DWORD guidHi, DWORD typeMask,
+                                      const char* file, int line);
+typedef int  (__cdecl   *CastTime_t)(void* rec, int a2, int a3, int a4);
+typedef int  (__thiscall *PlayerCastTime_t)(void* unit, void* rec);
+typedef unsigned __int64 (__cdecl *GetActiveGuid_t)();
 
 static WeaponCheck_t  pOrigWeaponCheck;
 static GetAuraCount_t pGetAuraCount;
@@ -230,6 +403,15 @@ static GetAuraInfo_t  pGetAuraInfo;
 static RangeCalc_t    pOrigRangeCalc;
 static CasterState_t  pOrigCasterState;
 static Usable_t       pOrigUsable;
+static TryTarget_t    pOrigTryTarget;
+static TargetCheck_t  pOrigTargetCheck;
+static CanAttack_t    pCanAttack;
+static CanAssist_t    pCanAssist;
+static SpellDbGet_t   pSpellDbGet;
+static ObjectPtr_t    pObjectPtr;
+static CastTime_t       pOrigCastTime;
+static PlayerCastTime_t pOrigPlayerCastTime;
+static GetActiveGuid_t  pGetActiveGuid;
 
 // --------------------------------------------------------------- settings
 static int  g_enabled    = 0;
@@ -264,10 +446,21 @@ static int  g_pointBlankAuraCount = 0;
 static int  g_untamedAuras[kMaxAuras];
 static int  g_untamedAuraCount = 0;
 
+// Rule: "fieldmedic" (Violet Hold Boon of the Field Medic). Damaging hunter
+// shots accept a friendly unit target. 0 entries = rule off.
+static int  g_fieldMedicAuras[kMaxAuras];
+static int  g_fieldMedicAuraCount = 0;
+
 // Set per rule only once its detour is actually in place.
 static bool g_pointBlankLive = false;
 static bool g_untamedCastLive = false;
 static bool g_untamedUsableLive = false;
+static bool g_fieldMedicLive = false;        // the acceptor 0x0080BC80 is hooked
+
+// Rule: "secondcoming" (Violet Hold Second Coming charge). Priest Resurrection
+// is castable in combat and instant. 0 entries = rule off.
+static int  g_secondComingAuras[kMaxAuras];
+static int  g_secondComingAuraCount = 0;
 
 // ------------------------------------------------------------------- logging
 static void Log(const char* fmt, ...)
@@ -490,11 +683,98 @@ static DWORD UnitFlagsOf(void* unit)
 // on the only exit. Ex5 bits are set rather than asked differentially because
 // 0x00739650 reports its error the moment it fails - a first "real" ask would
 // already have printed "Can't do that while stunned".
+// ------------------------------------- Second Coming (in-combat, instant res)
+//
+// Priest family with a RESURRECT_NEW (113) effect in any slot: Resurrection
+// 2006 / 2010 / 10880 / 10881 / 20770 / 25435 / 48171 (and, by the same
+// predicate, the unused 21074 / 32841 / 51035 variants).
+static bool IsSecondComingSpell(const void* rec)
+{
+    if (!rec || !Readable((void*)rec, kRec_SpellFamilyName + 4))
+        return false;
+    const BYTE* r = (const BYTE*)rec;
+    if (*(const int*)(r + kRec_SpellFamilyName) != kFamilyPriest)
+        return false;
+    const int* effects = (const int*)(r + kRec_Effect1);
+    return effects[0] == kEffectResurrectNew || effects[1] == kEffectResurrectNew ||
+           effects[2] == kEffectResurrectNew;
+}
+
+static int SecondComingHolder(void* unit, const void* rec)
+{
+    if (!g_enabled || !g_secondComingAuraCount || !unit || !IsSecondComingSpell(rec))
+        return 0;
+    return UnitHasAnyAura(unit, g_secondComingAuras, g_secondComingAuraCount);
+}
+
+// Calls `fn` with SPELL_ATTR0_CANT_USED_IN_COMBAT cleared on the record copy.
+// Nothing else reads that bit in either function (see the constants block).
+#define WITH_COMBAT_BIT_CLEARED(rec, expr)                                    \
+    do {                                                                     \
+        DWORD* pAttr_ = (DWORD*)((BYTE*)(rec) + kRec_Attributes);            \
+        DWORD  savedAttr_ = *pAttr_;                                         \
+        *pAttr_ = savedAttr_ & ~kAttr0CantUsedInCombat;                      \
+        expr;                                                                \
+        *pAttr_ = savedAttr_;                                                \
+    } while (0)
+
+// The cast-time calculator for the active player. Runs the real calculation,
+// then reports instant for a holder. a2 != 0 means the cast is for the
+// player's charm/pet (0x007FF224 then measures haste on that unit); a pet
+// never casts Resurrection, but leave that case alone anyway.
+static int __cdecl CastTimeWrapper(void* rec, int a2, int a3, int a4)
+{
+    int ms = pOrigCastTime(rec, a2, a3, a4);
+    if (ms <= 0 || a2 || !g_enabled || !g_secondComingAuraCount || !IsSecondComingSpell(rec))
+        return ms;
+
+    unsigned __int64 guid = pGetActiveGuid();
+    if (!guid)
+        return ms;
+    void* player = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnit, "rulerelax", __LINE__);
+    int matchedAura = player ? UnitHasAnyAura(player, g_secondComingAuras, g_secondComingAuraCount) : 0;
+    if (!matchedAura)
+        return ms;
+
+    if (g_debug) {
+        // Throttled: the tooltip asks every frame while it is shown.
+        static int   s_lastSpell;
+        static DWORD s_lastTick;
+        int   spellId = *(int*)((BYTE*)rec + kRec_Id);
+        DWORD now     = GetTickCount();
+        if (spellId != s_lastSpell || now - s_lastTick > 5000) {
+            Log("second coming: spell=%d cast time %d ms -> instant aura=%d", spellId, ms, matchedAura);
+            s_lastSpell = spellId;
+            s_lastTick  = now;
+        }
+    }
+    return 0;
+}
+
+// CGPlayer::GetSpellCastTime (virtual). Only the cast-start visual asks it.
+static int __fastcall PlayerCastTimeWrapper(void* unit, void* /*edx*/, void* rec)
+{
+    int ms = pOrigPlayerCastTime(unit, rec);
+    if (ms > 0 && SecondComingHolder(unit, rec))
+        return 0;
+    return ms;
+}
+
 static bool __fastcall CasterStateWrapper(void* unit, void* /*edx*/, void* errSink, void* rec, void* a3)
 {
     int matchedAura;
-    if (!UntamedApplies(unit, rec, &matchedAura))
-        return pOrigCasterState(unit, errSink, rec, a3);
+    if (!UntamedApplies(unit, rec, &matchedAura)) {
+        int scAura = SecondComingHolder(unit, rec);
+        if (!scAura || !Writable((BYTE*)rec + kRec_Attributes, 4))
+            return pOrigCasterState(unit, errSink, rec, a3);
+
+        bool ok;
+        WITH_COMBAT_BIT_CLEARED(rec, ok = pOrigCasterState(unit, errSink, rec, a3));
+        if (g_debug && (UnitFlagsOf(unit) & kUnitFlagInCombat))
+            Log("second coming cast: spell=%d in combat aura=%d -> %s",
+                *(int*)((BYTE*)rec + kRec_Id), scAura, ok ? "allowed" : "still refused");
+        return ok;
+    }
 
     DWORD* pEx5  = (DWORD*)((BYTE*)rec + kRec_AttributesEx5);
     DWORD  saved = *pEx5;
@@ -511,20 +791,214 @@ static bool __fastcall CasterStateWrapper(void* unit, void* /*edx*/, void* errSi
     return ok;
 }
 
-// The predicate prints nothing, but it is asked for every form button on every
-// usability update, so it logs nothing either.
+// ------------------------------------------------- Field Medic (shoot allies)
+//
+// The server's VioletHoldClassBoons::ShootsAllies, mirrored on the record:
+// hunter family, ranged damage class, and every effect is a plain damage
+// effect (SCHOOL_DAMAGE 2, WEAPON_DAMAGE_NOSCHOOL 17, WEAPON_PERCENT_DAMAGE 31,
+// WEAPON_DAMAGE 58, NORMALIZED_WEAPON_DMG 121), at least one of them. So Auto
+// Shot (58), Arcane Shot (2), Multi-Shot (121), Kill Shot (17+31), Aimed Shot
+// rank 1 (121) qualify; stings, Concussive / Scatter / Tranquilizing Shot and
+// anything with an aura or dummy effect do not - the server would refuse them
+// on a friend, so the client must not light them up either.
+static bool IsFieldMedicShot(const void* rec)
+{
+    if (!rec || !Readable((void*)rec, kRec_DmgClass + 4))
+        return false;
+    const BYTE* r = (const BYTE*)rec;
+    if (*(const int*)(r + kRec_SpellFamilyName) != kFamilyHunter ||
+        *(const int*)(r + kRec_DmgClass) != kDmgClassRanged)
+        return false;
+
+    bool hits = false;
+    const int* effects = (const int*)(r + kRec_Effect1);
+    for (int i = 0; i < 3; ++i) {
+        switch (effects[i]) {
+            case 0:
+                break;
+            case 2: case 17: case 31: case 58: case 121:
+                hits = true;
+                break;
+            default:
+                return false;
+        }
+    }
+    return hits;
+}
+
+// OBJECT_FIELD_TYPE & TYPEMASK_UNIT - the same test the acceptor makes at
+// 0x0080BD3A ([obj+8] = descriptor, +8 = type mask).
+static bool IsUnitObject(void* obj)
+{
+    if (!obj || !Readable((BYTE*)obj + 8, 4)) return false;
+    BYTE* desc = *(BYTE**)((BYTE*)obj + 8);
+    if (!desc || !Readable(desc + 8, 4)) return false;
+    return (*(DWORD*)(desc + 8) & kTypeMaskUnit) != 0;
+}
+
+// Throttled debug line: the acceptor is also asked by the spell cursor, so a
+// held cursor over a friend would otherwise log every frame.
+static void LogFieldMedic(int spellId, bool ok, int aura)
+{
+    static int   s_lastSpell;
+    static bool  s_lastOk;
+    static DWORD s_lastTick;
+    DWORD now = GetTickCount();
+    if (spellId == s_lastSpell && ok == s_lastOk && now - s_lastTick < 2000)
+        return;
+    s_lastSpell = spellId;
+    s_lastOk    = ok;
+    s_lastTick  = now;
+    Log("field medic: spell=%d friendly target -> %s aura=%d",
+        spellId, ok ? "accepted" : "still refused (range / dead / not assistable)", aura);
+}
+
+// THE waiver. Only when the pending cast still wants exactly an enemy unit
+// (0x80, and none of unit/raid/party/ally which would already take a friend),
+// the object is a unit the caster can NOT attack, the spell is a Field Medic
+// shot and the caster holds the boon: swap 0x80 for 0x100 for this one call.
+// An attackable unit (any enemy, a duel partner) never gets here, so it is shot
+// exactly as before.
+//
+// After the call: if 0x100 is still set, the ally branch did not take the unit
+// (not assistable, dead, or the range check failed and restored the flags from
+// entry) - put 0x80 back so the pending cast is exactly what it was. If 0x100
+// is gone the ally branch accepted it, which also cleared what 0x80 would have,
+// and - when nothing else was needed - already sent the cast.
+static bool __cdecl TryTargetWrapper(void* obj, void* castTargets)
+{
+    if (!g_enabled || !g_fieldMedicAuraCount)
+        return pOrigTryTarget(obj, castTargets);
+
+    DWORD* pFlags = (DWORD*)kCastTargetFlags;
+    DWORD  flags  = *pFlags;
+    const DWORD takesFriend = kTargetFlagUnit | kTargetFlagRaid | kTargetFlagParty | kTargetFlagUnitAlly;
+    if (!(flags & kTargetFlagUnitEnemy) || (flags & takesFriend))
+        return pOrigTryTarget(obj, castTargets);
+
+    BYTE* ct = (BYTE*)(castTargets ? castTargets : *(void**)kPendingCast);
+    if (!ct || !Readable(ct, kCast_SpellId + 4) || !IsUnitObject(obj))
+        return pOrigTryTarget(obj, castTargets);
+
+    int spellId = *(int*)(ct + kCast_SpellId);
+    BYTE rec[kSpellRecSize + 8];
+    if (!pSpellDbGet((void*)kSpellDb, spellId, rec) || !IsFieldMedicShot(rec))
+        return pOrigTryTarget(obj, castTargets);
+
+    void* caster = pObjectPtr(*(DWORD*)(ct + kCast_CasterGuid), *(DWORD*)(ct + kCast_CasterGuid + 4),
+                              kTypeMaskUnit, "rulerelax", __LINE__);
+    if (!caster)                                // self-target is fine: not attackable, assistable
+        return pOrigTryTarget(obj, castTargets);
+    if (pCanAttack(caster, obj))                // an enemy: the stock branch shoots it
+        return pOrigTryTarget(obj, castTargets);
+
+    int matchedAura = UnitHasAnyAura(caster, g_fieldMedicAuras, g_fieldMedicAuraCount);
+    if (!matchedAura)
+        return pOrigTryTarget(obj, castTargets);
+
+    *pFlags = (flags & ~kTargetFlagUnitEnemy) | kTargetFlagUnitAlly;
+    bool ok = pOrigTryTarget(obj, castTargets);
+    DWORD after = *pFlags;
+    if (after & kTargetFlagUnitAlly)
+        *pFlags = (after & ~kTargetFlagUnitAlly) | kTargetFlagUnitEnemy;
+
+    if (g_debug)
+        LogFieldMedic(spellId, ok, matchedAura);
+    return ok;
+}
+
+// Range tint on a friend. Adding UNIT_ALLY to the record's Targets is enough
+// here: the ally branch is tested BEFORE the enemy branch, so an enemy still
+// fails the ally test and reaches CanAttack exactly as before, and a unit that
+// is both (duel partner) is accepted either way by the same range check. Only
+// a friend changes outcome: "no answer" becomes in range / out of range.
+static bool __cdecl TargetCheckWrapper(void* caster, void* rec, DWORD guidLo, DWORD guidHi,
+                                       void* inRange, int showError, void* errSink)
+{
+    if (!g_enabled || !g_fieldMedicAuraCount || !caster || !IsFieldMedicShot(rec) ||
+        !Writable((BYTE*)rec + kRec_Targets, 4) ||
+        !UnitHasAnyAura(caster, g_fieldMedicAuras, g_fieldMedicAuraCount))
+        return pOrigTargetCheck(caster, rec, guidLo, guidHi, inRange, showError, errSink);
+
+    DWORD* pTargets = (DWORD*)((BYTE*)rec + kRec_Targets);
+    DWORD  saved    = *pTargets;
+    *pTargets = saved | kTargetFlagUnitAlly;
+    bool ok = pOrigTargetCheck(caster, rec, guidLo, guidHi, inRange, showError, errSink);
+    *pTargets = saved;
+    return ok;
+}
+
+// Usability predicate, Field Medic half. 0x0080B987 only looks at the target
+// when the spell has a target aura requirement (rec+0x54/0x5C/0x64/0x6C) -
+// among Field Medic shots that is Kill Shot (TargetAuraState 2, health < 20%).
+// Then 0x0080BAC4 demands CanAttack for implicit target 6, so Kill Shot dims on
+// a friend even below 20%. Swapping the implicit target to 21 (TARGET_UNIT_
+// TARGET_ALLY) for the call makes 0x0080B9E2 keep the friend as the unit whose
+// aura state is read and 0x0080BADD ask CanAssist instead. Only done when the
+// selected unit is assistable and not attackable, so for an enemy (and for a
+// neutral that is neither) the predicate runs untouched.
+static bool FieldMedicUsableSwap(void* unit, void* rec, void* guidPtr)
+{
+    if (!g_fieldMedicLive || !g_fieldMedicAuraCount || !unit || !IsFieldMedicShot(rec))
+        return false;
+    const BYTE* r = (const BYTE*)rec;
+    if (*(const int*)(r + kRec_ImplicitTargetA1) != kTargetUnitTargetEnemy)
+        return false;
+    if (!*(const int*)(r + kRec_TargetAuraState) && !*(const int*)(r + kRec_TargetAuraStateNot) &&
+        !*(const int*)(r + kRec_TargetAuraSpell) && !*(const int*)(r + kRec_ExcludeTargetAura))
+        return false;                            // the predicate never looks at the target
+    if (!Writable((BYTE*)rec + kRec_ImplicitTargetA1, 4))
+        return false;
+
+    DWORD lo = 0, hi = 0;
+    if (guidPtr && Readable(guidPtr, 8)) {
+        lo = ((DWORD*)guidPtr)[0];
+        hi = ((DWORD*)guidPtr)[1];
+    }
+    if (!lo && !hi) {                           // same fallback as 0x0080B9B0
+        lo = ((DWORD*)kCurrentTarget)[0];
+        hi = ((DWORD*)kCurrentTarget)[1];
+    }
+    if (!lo && !hi)
+        return false;
+    void* target = pObjectPtr(lo, hi, kTypeMaskUnit, "rulerelax", __LINE__);
+    if (!target || pCanAttack(unit, target) || !pCanAssist(unit, target, 0))
+        return false;
+    return UnitHasAnyAura(unit, g_fieldMedicAuras, g_fieldMedicAuraCount) != 0;
+}
+
+// The predicate prints nothing, but it is asked for every button on every
+// usability update, so it logs nothing either. Shared by "untamed",
+// "secondcoming" and "fieldmedic" (druid / priest / hunter family, so at most
+// one applies per call).
 static bool __cdecl UsableWrapper(void* unit, void* rec, void* a3, void* a4, void* a5)
 {
     int matchedAura;
-    if (!UntamedApplies(unit, rec, &matchedAura))
-        return pOrigUsable(unit, rec, a3, a4, a5);
+    if (UntamedApplies(unit, rec, &matchedAura)) {
+        DWORD* pEx5  = (DWORD*)((BYTE*)rec + kRec_AttributesEx5);
+        DWORD  saved = *pEx5;
+        *pEx5 = saved | kEx5UsableWhileControlled;
+        bool ok = pOrigUsable(unit, rec, a3, a4, a5);
+        *pEx5 = saved;
+        return ok;
+    }
 
-    DWORD* pEx5  = (DWORD*)((BYTE*)rec + kRec_AttributesEx5);
-    DWORD  saved = *pEx5;
-    *pEx5 = saved | kEx5UsableWhileControlled;
-    bool ok = pOrigUsable(unit, rec, a3, a4, a5);
-    *pEx5 = saved;
-    return ok;
+    if (SecondComingHolder(unit, rec) && Writable((BYTE*)rec + kRec_Attributes, 4)) {
+        bool ok;
+        WITH_COMBAT_BIT_CLEARED(rec, ok = pOrigUsable(unit, rec, a3, a4, a5));
+        return ok;
+    }
+
+    if (FieldMedicUsableSwap(unit, rec, a3)) {
+        int* pImplicit = (int*)((BYTE*)rec + kRec_ImplicitTargetA1);
+        int  saved     = *pImplicit;
+        *pImplicit = kTargetUnitTargetAlly;
+        bool ok = pOrigUsable(unit, rec, a3, a4, a5);
+        *pImplicit = saved;
+        return ok;
+    }
+
+    return pOrigUsable(unit, rec, a3, a4, a5);
 }
 
 // ------------------------------------------------------------------ settings
@@ -568,6 +1042,14 @@ void RuleRelax_LoadSettings(const char* dir)
 
     GetPrivateProfileStringA("RuleRelax", "UntamedAura", "94361", buf, sizeof(buf), ini);
     ParseSpellList(buf, g_untamedAuras, &g_untamedAuraCount, kMaxAuras);
+
+    // Must match SPELL_FIELD_MEDIC in VioletHoldClassBoons.h.
+    GetPrivateProfileStringA("RuleRelax", "FieldMedicAura", "94383", buf, sizeof(buf), ini);
+    ParseSpellList(buf, g_fieldMedicAuras, &g_fieldMedicAuraCount, kMaxAuras);
+
+    // Second Coming charge aura (server: the Violet Hold priest boon).
+    GetPrivateProfileStringA("RuleRelax", "SecondComingAura", "94386", buf, sizeof(buf), ini);
+    ParseSpellList(buf, g_secondComingAuras, &g_secondComingAuraCount, kMaxAuras);
 }
 
 // ------------------------------------------------------------------- install
@@ -614,7 +1096,8 @@ void RuleRelax_Install()
 {
     // Inert until an aura id is configured, so shipping it enabled changes
     // nothing for anyone until the boon / set exists.
-    if (!g_enabled || (!g_weaponAuraCount && !g_pointBlankAuraCount && !g_untamedAuraCount))
+    if (!g_enabled || (!g_weaponAuraCount && !g_pointBlankAuraCount && !g_untamedAuraCount &&
+                       !g_fieldMedicAuraCount && !g_secondComingAuraCount))
         return;
 
     // Every rule reads auras; without these nothing is safe to install.
@@ -674,5 +1157,107 @@ void RuleRelax_Install()
                 g_untamedAuraCount, g_untamedAuras[0]);
         else
             g_untamedAuraCount = 0;
+    }
+
+    if (g_fieldMedicAuraCount) {
+        // The acceptor is the refusal; everything it calls must match before
+        // it is patched. The range pre-check and the usability predicate are
+        // cosmetic (range tint, Kill Shot button) - each logs on its own if it
+        // fails and the rule stays on.
+        bool sigsOk =
+            VerifySig(kTryTarget,  kTryTargetSig,  sizeof(kTryTargetSig),  "target-acceptor") &&
+            VerifySig(kCanAttack,  kCanAttackSig,  sizeof(kCanAttackSig),  "CanAttack") &&
+            VerifySig(kCanAssist,  kCanAssistSig,  sizeof(kCanAssistSig),  "CanAssist") &&
+            VerifySig(kSpellDbGet, kSpellDbGetSig, sizeof(kSpellDbGetSig), "SpellDbGet") &&
+            VerifySig(kObjectPtr,  kObjectPtrSig,  sizeof(kObjectPtrSig),  "ObjectPtr");
+        if (sigsOk) {
+            pCanAttack  = (CanAttack_t)kCanAttack;
+            pCanAssist  = (CanAssist_t)kCanAssist;
+            pSpellDbGet = (SpellDbGet_t)kSpellDbGet;
+            pObjectPtr  = (ObjectPtr_t)kObjectPtr;
+            pOrigTryTarget = (TryTarget_t)InstallDetour(kTryTarget, kTryTargetSig,
+                sizeof(kTryTargetSig), kTryTargetStolen, (void*)&TryTargetWrapper, "target-acceptor");
+            g_fieldMedicLive = pOrigTryTarget != NULL;
+        }
+
+        bool rangeLive = false, usableLive = false;
+        if (g_fieldMedicLive) {
+            pOrigTargetCheck = (TargetCheck_t)InstallDetour(kTargetCheck, kTargetCheckSig,
+                sizeof(kTargetCheckSig), kTargetCheckStolen, (void*)&TargetCheckWrapper,
+                "target-range-check");
+            rangeLive = pOrigTargetCheck != NULL;
+
+            // The usability predicate may already be detoured by "untamed";
+            // UsableWrapper serves both rules, so patch it only once.
+            if (!pOrigUsable)
+                pOrigUsable = (Usable_t)InstallDetour(kUsable, kUsableSig, sizeof(kUsableSig),
+                    kUsableStolen, (void*)&UsableWrapper, "usable-predicate");
+            usableLive = pOrigUsable != NULL;
+        }
+
+        if (g_fieldMedicLive)
+            Log("fieldmedic rule installed at 0x%08X%s%s (%d aura(s), first %d)",
+                kTryTarget,
+                rangeLive  ? " + 0x00809610" : " [range check FAILED]",
+                usableLive ? " + 0x0080B5D0" : " [predicate FAILED]",
+                g_fieldMedicAuraCount, g_fieldMedicAuras[0]);
+        else
+            g_fieldMedicAuraCount = 0;
+    }
+
+    if (g_secondComingAuraCount) {
+        // Two halves that both matter: the combat waiver (caster-state check,
+        // already detoured if "untamed" installed) and instant cast (the
+        // cast-time calculator). Everything is verified before anything is
+        // patched; the button (usability predicate) and the cast-start visual
+        // (player virtual) are cosmetic and log on their own if they fail.
+        bool sigsOk =
+            VerifySig(kCastTime,      kCastTimeSig,      sizeof(kCastTimeSig),      "cast-time") &&
+            VerifySig(kGetActiveGuid, kGetActiveSig,     sizeof(kGetActiveSig),     "GetActivePlayerGuid") &&
+            VerifySig(kObjectPtr,     kObjectPtrSig,     sizeof(kObjectPtrSig),     "ObjectPtr") &&
+            (pOrigCasterState ||
+             VerifySig(kCasterState,  kCasterStateSig,   sizeof(kCasterStateSig),   "caster-state"));
+        bool combatLive = false, castTimeLive = false, usableLive = false, visualLive = false;
+        if (sigsOk) {
+            pGetActiveGuid = (GetActiveGuid_t)kGetActiveGuid;
+            pObjectPtr     = (ObjectPtr_t)kObjectPtr;
+
+            if (!pOrigCasterState)
+                pOrigCasterState = (CasterState_t)InstallDetour(kCasterState, kCasterStateSig,
+                    sizeof(kCasterStateSig), kCasterStateStolen, (void*)&CasterStateWrapper,
+                    "caster-state");
+            combatLive = pOrigCasterState != NULL;
+
+            if (combatLive) {
+                pOrigCastTime = (CastTime_t)InstallDetour(kCastTime, kCastTimeSig,
+                    sizeof(kCastTimeSig), kCastTimeStolen, (void*)&CastTimeWrapper, "cast-time");
+                castTimeLive = pOrigCastTime != NULL;
+            }
+        }
+        if (combatLive && castTimeLive) {
+            if (!pOrigUsable)
+                pOrigUsable = (Usable_t)InstallDetour(kUsable, kUsableSig, sizeof(kUsableSig),
+                    kUsableStolen, (void*)&UsableWrapper, "usable-predicate");
+            usableLive = pOrigUsable != NULL;
+
+            pOrigPlayerCastTime = (PlayerCastTime_t)InstallDetour(kPlayerCastTime,
+                kPlayerCastTimeSig, sizeof(kPlayerCastTimeSig), kPlayerCastTimeStolen,
+                (void*)&PlayerCastTimeWrapper, "player-cast-time");
+            visualLive = pOrigPlayerCastTime != NULL;
+
+            Log("secondcoming rule installed at 0x%08X + 0x%08X%s%s (%d aura(s), first %d)",
+                kCasterState, kCastTime,
+                usableLive ? " + 0x0080B5D0" : " [predicate FAILED]",
+                visualLive ? " + 0x006D68D0" : " [player virtual FAILED]",
+                g_secondComingAuraCount, g_secondComingAuras[0]);
+        } else {
+            // A half-installed rule would be worse than none (in combat but a
+            // 10 s cast, or instant but refused): the caster-state detour may be
+            // shared with untamed, so only the aura list is switched off -
+            // every wrapper checks it first.
+            if (combatLive && !castTimeLive)
+                Log("secondcoming: cast-time hook FAILED - rule off");
+            g_secondComingAuraCount = 0;
+        }
     }
 }

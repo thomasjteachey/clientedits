@@ -9,8 +9,11 @@
 // waived at runtime only for a player carrying a configured aura.
 //
 // Rules: "weapon" (equipped-weapon requirement, aura 90217), "pointblank"
-// (hunter minimum range, Violet Hold aura 94346) and "untamed" (druid forms
-// through stun/fear/confuse, Violet Hold aura 94361). Each installs on its own.
+// (hunter minimum range, Violet Hold aura 94346), "untamed" (druid forms
+// through stun/fear/confuse, Violet Hold aura 94361) and "fieldmedic" (hunter
+// damaging shots may target a friendly unit, Violet Hold aura 94383) and
+// "secondcoming" (priest Resurrection in combat and instant, aura 94386). Each
+// installs on its own.
 //
 // See rulerelax.cpp, docs/RULE_RELAX_RE.md and docs/VH_CLASS_BOONS_RE.md.
 #pragma once
