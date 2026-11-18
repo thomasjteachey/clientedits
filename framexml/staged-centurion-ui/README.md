@@ -4,7 +4,7 @@ These are the exact files that were published, and the generators that build the
 
 | file | archive | what |
 |---|---|---|
-| `Interface/GlueXML/CharacterCreate.xml/.lua` | **patch-enUS-6 1.00009** (replaced in place; the owner's CharacterCreate lives here) | "Tournament character" checkbox next to the name box; a Challenges panel above it with one checkbox per challenge mode. Ticking the tournament box unticks every challenge and ticking a challenge unticks it; ticking one of an exclusive pair locks the other. Wrapping tooltips. Centurion/CenturionDev only |
+| `Interface/GlueXML/CharacterCreate.xml/.lua` | **patch-enUS-6 1.00009**, currently **1.00017** (replaced in place; the owner's CharacterCreate lives here) | "Tournament character" checkbox next to the name box; a Challenges panel above it with one checkbox per challenge mode. Ticking the tournament box unticks every challenge and ticking a challenge unticks it; ticking one of an exclusive pair locks the other. Wrapping tooltips. Centurion/CenturionDev only |
 | `Interface/GlueXML/CharacterSelect.xml/.lua` | **patch-enUS-6 1.00009** (new there; stock copies are in patch-enUS-3) | Up to 20 characters: 10 rows (9 while the create button shows), scroll bar, mouse wheel. World/Tournament badge per character. Move up/down buttons on the selected character and Shift+Up/Down. Centurion/CenturionDev only; other realms get the stock behaviour |
 | `Interface/FrameXML/PVPBattlegroundFrame.xml/.lua` | **patch-Y** (published as `patch-Y.zip`; the launcher writes it to disk as `patch-X.MPQ` since 2026-09-17, see `FileMap['patch-X']`) | "Gurubashi chest" and "Tournament queue" checkboxes in place of the Wintergrasp timer, hidden until the server answers `CCGAMEREQ GURUCHEST` / `TQUEUE`. The tournament box is locked for nearly everyone, so it keeps its mouse scripts while disabled (`SetMotionScriptsWhileDisabled`, present in this client) and its tooltip spells out why it is locked and what a tournament match does to your gear, read from the `TQUEUEWHY` line. **Shipped** — the copies in `Interface/` are md5-identical to the live archive |
 | `Interface/FrameXML/ArenaFrame.lua` | **patch-enUS-A 1.00130** (2026-09-19, `spec_arenabots_A.json`) | "Arena bot matches" (`CCGAMEREQ ARENABOTS`): whether an unrated arena queue may be popped as a clone-filled skirmish. It sits on the **Practice Battle** line, right-aligned at `RIGHT, ArenaFrame, TOPRIGHT, -40, -177`, because a skirmish is the only queue it touches. `ArenaFrame.xml` is stock and stays that way — the box is built in Lua like the frame's own extra zone buttons, and everything hangs off `ArenaFrame_OnLoad` because the `<Script>` tag runs the file before the frame exists. Hidden until the server answers |
@@ -24,6 +24,19 @@ FRIZQT__.TTF, so a layout can be judged before it costs a patch push. `candidate
 several layouts side by side. Art and font were pulled out of the stock archives with
 `mpqread.py` + `blp.py` (mpqtool cannot read those; the python reader can) and are cached in
 `render/art/`. **Use it before changing either frame.**
+
+`render/charcreate_render.py` does the same for the **character create screen** at any
+resolution (`charcreate_render.py 1920 1080 live`; `charcreate_sheet.py` puts four layouts
+side by side). Glue screens are always 768 units tall and only the width changes with the
+aspect ratio, so check 1920x1080 **and** 1920x1200: the right-hand race/class boxes are pinned
+to the screen edge while the name boxes are centred, and the gap between them shrinks
+as the screen narrows. The owner plays at 3440x1440, where nothing crowds.
+**patch-enUS-6 1.00017** (2026-11-18, `spec_challenges1080_6.json`) fixed what that hid: the
+Challenges panel sat 64 units right of the tournament checkbox and touched the class
+box at 16:9 (71 units into it at 16:10). It now sits on the checkbox, left edges lined up
+(`BOTTOMLEFT` at its `TOPLEFT`, `0, 4`), which clears 16:9. It still touches the class box at
+16:10 (~7 units); the owner chose this over moving the panel beside the class box
+(candidates B/C in the renderer, clear at 16:10).
 
 `render/lua_compile.py` is the other check worth running: copy it and the .lua to the game
 server and `python3 lua_compile.py <file>` compiles the chunk with the box's

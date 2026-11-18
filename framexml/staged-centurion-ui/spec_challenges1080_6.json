@@ -1,0 +1,9 @@
+{
+  "name": "patch-enUS-6",
+  "change": "challenges-1080p",
+  "stage": "/tmp/centmode/challenges1080/stage6",
+  "backup_dir": null,
+  "files": {
+    "Interface\\GlueXML\\CharacterCreate.xml": "2fe6f86430f0dd2f2c811335d0c17561"
+  }
+}

@@ -180,7 +180,7 @@ block = '''					<CheckButton name="CharacterCreateTournamentMode" hidden="true">
 					<Frame name="CharacterCreateChallengesFrame" hidden="true">
 						<Size x="190" y="%d"/>
 						<Anchors>
-							<Anchor point="BOTTOMLEFT" relativeTo="CharacterCreateTournamentMode" relativePoint="TOPLEFT" x="64" y="0"/>
+							<Anchor point="BOTTOMLEFT" relativeTo="CharacterCreateTournamentMode" relativePoint="TOPLEFT" x="0" y="4"/>
 						</Anchors>
 						<Backdrop bgFile="Interface\\Tooltips\\UI-Tooltip-Background" edgeFile="Interface\\Tooltips\\UI-Tooltip-Border" tile="true">
 							<EdgeSize>
