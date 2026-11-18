@@ -9,7 +9,7 @@
 // waived at runtime only for a player carrying a configured aura.
 //
 // Rules: "weapon" (equipped-weapon requirement, aura 90217), "pointblank"
-// (hunter minimum range, Violet Hold aura 94346), "untamed" (druid forms
+// (hunter minimum range plus moving Aimed/Multi-Shot, Violet Hold aura 94346), "untamed" (druid forms
 // through stun/fear/confuse, Violet Hold aura 94361) and "fieldmedic" (hunter
 // damaging shots may target a friendly unit, Violet Hold aura 94383) and
 // "secondcoming" (priest Resurrection in combat and instant, aura 94386). Each

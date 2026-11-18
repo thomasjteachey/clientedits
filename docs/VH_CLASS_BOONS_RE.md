@@ -62,7 +62,7 @@ copy buffer size in `0x00802C30`.
 | `CastingTimeIndex` | 28 | `+0x070` | `0x007FF195`, `0x006D68EB`, `0x0071AD38` |
 | `EffectImplicitTargetA1` | 86 | `+0x158` | `0x0080C79F` (switch), `0x0080BAC4` `cmp …, 6` |
 
-## Point Blank — minimum range (aura 94346)
+## Point Blank — minimum range and moving shots (aura 94346)
 
 The minimum range is computed in exactly one place that a gate reaches:
 
@@ -440,7 +440,14 @@ same as Bare Knuckle 90217, so the client has them in its aura array.
 Debug lines: `relaxed min range: spell=… min=… -> 0` (throttled, it runs per
 button per update) and `untamed cast: spell=… unitFlags=… -> allowed` (only
 when you are actually stunned/feared/confused). Install lines:
-`pointblank rule installed at 0x007FF480`, `untamed rule installed at
+Point Blank also shares the active-player cast-time detour used by Second
+Coming. For Aimed Shot (hunter family flag `0x20000`) and Multi-Shot
+(`0x1000`), it reports zero only to the two movement-refusal callers returning
+to `0x0073A0C0` and `0x0080B086`. Every other caller receives the real cast
+time, so the shots remain non-instant. The server owns movement interruption
+after the cast begins and applies the matching aura-gated waiver.
+
+`pointblank rule installed at 0x007FF480 + 0x007FF180`, `untamed rule installed at
 0x00739650 + 0x0080B5D0`.
 
 ## In-game test plan (owner)
@@ -456,7 +463,9 @@ refusal to the server. Set `Debug = 1`.
    ~3 yd: Arcane Shot says "Target too close", Auto Shot button red.
 3. **Point Blank.** Take the boon (or `.aura 94346`): same spot — Auto Shot
    button not red, Auto Shot fires and keeps firing, Arcane Shot / Concussive /
-   Serpent Sting cast. Log shows `relaxed min range`. Max range unchanged
+   Serpent Sting cast. Start Aimed Shot and Multi-Shot while already moving,
+   and begin moving during either cast; both finish without becoming instant.
+   Log shows `relaxed min range` / `point blank moving cast`. Max range unchanged
    (step back past 35 yd → "Out of range").
 4. **Point Blank, scope.** Non-hunter spell with a minimum range on a hunter
    (none in stock; skip if none) and a non-hunter with the aura: nothing

@@ -76,10 +76,11 @@
 // never consulted without these. Full RE notes: docs/VH_CLASS_BOONS_RE.md.
 //
 //   "pointblank"  aura 94346. Hunter-family (SpellFamilyName 9) spells get a
-//                 minimum range of 0. Hooked at the single min/max range
-//                 calculator 0x007FF480, which every range consumer reaches
-//                 (cast path "Target too close", IsSpellInRange / action
-//                 button range tint, Auto Shot), so all of them agree.
+//                 minimum range of 0. Aimed Shot and Multi-Shot also pass the
+//                 two start-while-moving checks without becoming instant.
+//                 Range is hooked at the single calculator 0x007FF480, which
+//                 every range consumer reaches; moving reuses the cast-time
+//                 detour at 0x007FF180 only for its two refusal callers.
 //   "untamed"     aura 94361. Druid-family (7) spells with an
 //                 APPLY_AURA MOD_SHAPESHIFT (36) effect ignore stun, fear and
 //                 confuse. Done by setting the client's OWN
@@ -117,6 +118,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <intrin.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include "rulerelax.h"
@@ -224,6 +226,7 @@ static const size_t kUsableStolen = 6;
 static const int kRec_AttributesEx5   = 0x024;   // field 9
 static const int kRec_ApplyAuraName1  = 0x17C;   // fields 95..97, raw layout
 static const int kRec_SpellFamilyName = 0x240;   // DBC field 208, in-memory 144
+static const int kRec_SpellFamilyFlags1 = 0x244;
 
 // --- Field Medic -------------------------------------------------------------
 //
@@ -366,6 +369,15 @@ static const int   kEffectResurrectNew      = 113;
 static const int kFamilyDruid    = 7;
 static const int kFamilyHunter   = 9;
 static const int kAuraModShapeshift = 36;
+static const DWORD kHunterFamilyFlagMultiShot = 0x00001000;
+static const DWORD kHunterFamilyFlagAimedShot = 0x00020000;
+
+// The two callers of the active-player cast-time calculator which reject a
+// cast that starts while moving. Returning zero only to these callers waives
+// their MOVING result without making the shot instant for prediction, the
+// cast bar or the server.
+static const DWORD kCasterStateMoveCheckReturn = 0x0073A0C0;
+static const DWORD kSendMoveCheckReturn        = 0x0080B086;
 
 // SPELL_ATTR5_USABLE_WHILE_STUNNED | _FEARED | _CONFUSED - the client's own
 // exemptions, read at 0x00739B45 / 0x00739CA4 / 0x00739D1D and 0x0080B708 /
@@ -453,6 +465,7 @@ static int  g_fieldMedicAuraCount = 0;
 
 // Set per rule only once its detour is actually in place.
 static bool g_pointBlankLive = false;
+static bool g_pointBlankMovingLive = false;
 static bool g_untamedCastLive = false;
 static bool g_untamedUsableLive = false;
 static bool g_fieldMedicLive = false;        // the acceptor 0x0080BC80 is hooked
@@ -642,6 +655,17 @@ static int __cdecl RangeCalcWrapper(void* caster, void* rec, float* minRange, fl
     return ret;
 }
 
+static bool IsPointBlankMovingShot(const void* rec)
+{
+    if (!rec || !Readable((void*)rec, kRec_SpellFamilyFlags1 + 4))
+        return false;
+    const BYTE* r = (const BYTE*)rec;
+    if (*(const int*)(r + kRec_SpellFamilyName) != kFamilyHunter)
+        return false;
+    DWORD const familyFlags = *(const DWORD*)(r + kRec_SpellFamilyFlags1);
+    return (familyFlags & (kHunterFamilyFlagAimedShot | kHunterFamilyFlagMultiShot)) != 0;
+}
+
 // ------------------------------------------- Untamed (stun / fear / confuse)
 //
 // True if this cast is a druid shapeshift and the unit holds the boon. The
@@ -725,13 +749,29 @@ static int SecondComingHolder(void* unit, const void* rec)
 static int __cdecl CastTimeWrapper(void* rec, int a2, int a3, int a4)
 {
     int ms = pOrigCastTime(rec, a2, a3, a4);
-    if (ms <= 0 || a2 || !g_enabled || !g_secondComingAuraCount || !IsSecondComingSpell(rec))
+    if (ms <= 0 || a2 || !g_enabled)
         return ms;
 
     unsigned __int64 guid = pGetActiveGuid();
     if (!guid)
         return ms;
     void* player = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnit, "rulerelax", __LINE__);
+
+    DWORD returnAddress = (DWORD)_ReturnAddress();
+    if (g_pointBlankMovingLive && player && IsPointBlankMovingShot(rec) &&
+        (returnAddress == kCasterStateMoveCheckReturn || returnAddress == kSendMoveCheckReturn)) {
+        int matchedAura = UnitHasAnyAura(player, g_pointBlankAuras, g_pointBlankAuraCount);
+        if (matchedAura) {
+            if (g_debug)
+                Log("point blank moving cast: spell=%d cast time check %d ms -> allowed aura=%d",
+                    *(int*)((BYTE*)rec + kRec_Id), ms, matchedAura);
+            return 0;
+        }
+    }
+
+    if (!g_secondComingAuraCount || !IsSecondComingSpell(rec))
+        return ms;
+
     int matchedAura = player ? UnitHasAnyAura(player, g_secondComingAuras, g_secondComingAuraCount) : 0;
     if (!matchedAura)
         return ms;
@@ -1124,11 +1164,24 @@ void RuleRelax_Install()
         pOrigRangeCalc = (RangeCalc_t)InstallDetour(kRangeCalc, kRangeCalcSig,
             sizeof(kRangeCalcSig), kRangeCalcStolen, (void*)&RangeCalcWrapper, "range-calc");
         g_pointBlankLive = pOrigRangeCalc != NULL;
-        if (g_pointBlankLive)
-            Log("pointblank rule installed at 0x%08X (%d aura(s), first %d)",
-                kRangeCalc, g_pointBlankAuraCount, g_pointBlankAuras[0]);
-        else
+        if (!g_pointBlankLive)
             g_pointBlankAuraCount = 0;
+        else {
+            bool movingSigsOk =
+                VerifySig(kCastTime,      kCastTimeSig,  sizeof(kCastTimeSig),  "cast-time") &&
+                VerifySig(kGetActiveGuid, kGetActiveSig, sizeof(kGetActiveSig), "GetActivePlayerGuid") &&
+                VerifySig(kObjectPtr,     kObjectPtrSig, sizeof(kObjectPtrSig), "ObjectPtr");
+            if (movingSigsOk) {
+                pGetActiveGuid = (GetActiveGuid_t)kGetActiveGuid;
+                pObjectPtr     = (ObjectPtr_t)kObjectPtr;
+                pOrigCastTime = (CastTime_t)InstallDetour(kCastTime, kCastTimeSig,
+                    sizeof(kCastTimeSig), kCastTimeStolen, (void*)&CastTimeWrapper, "cast-time");
+                g_pointBlankMovingLive = pOrigCastTime != NULL;
+            }
+            Log("pointblank rule installed at 0x%08X%s (%d aura(s), first %d)",
+                kRangeCalc, g_pointBlankMovingLive ? " + 0x007FF180" : " [moving cast FAILED]",
+                g_pointBlankAuraCount, g_pointBlankAuras[0]);
+        }
     }
 
     if (g_untamedAuraCount) {
@@ -1212,7 +1265,7 @@ void RuleRelax_Install()
         // patched; the button (usability predicate) and the cast-start visual
         // (player virtual) are cosmetic and log on their own if they fail.
         bool sigsOk =
-            VerifySig(kCastTime,      kCastTimeSig,      sizeof(kCastTimeSig),      "cast-time") &&
+            (pOrigCastTime || VerifySig(kCastTime, kCastTimeSig, sizeof(kCastTimeSig), "cast-time")) &&
             VerifySig(kGetActiveGuid, kGetActiveSig,     sizeof(kGetActiveSig),     "GetActivePlayerGuid") &&
             VerifySig(kObjectPtr,     kObjectPtrSig,     sizeof(kObjectPtrSig),     "ObjectPtr") &&
             (pOrigCasterState ||
@@ -1229,8 +1282,9 @@ void RuleRelax_Install()
             combatLive = pOrigCasterState != NULL;
 
             if (combatLive) {
-                pOrigCastTime = (CastTime_t)InstallDetour(kCastTime, kCastTimeSig,
-                    sizeof(kCastTimeSig), kCastTimeStolen, (void*)&CastTimeWrapper, "cast-time");
+                if (!pOrigCastTime)
+                    pOrigCastTime = (CastTime_t)InstallDetour(kCastTime, kCastTimeSig,
+                        sizeof(kCastTimeSig), kCastTimeStolen, (void*)&CastTimeWrapper, "cast-time");
                 castTimeLive = pOrigCastTime != NULL;
             }
         }
