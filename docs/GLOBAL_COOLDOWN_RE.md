@@ -36,3 +36,14 @@ DBC 205 StartRecoveryCategory -> `0x234`, 206 StartRecoveryTime -> `0x238`, 208 
 `GetAuraCount 0x4F8850`, `GetAuraInfo 0x4F8870` (-> spell id), `0x556E10`
 `__thiscall(unit, index)` -> record pointer, 0 when out of range.
 `+0x08` spell id, `+0x0E` stack count (byte; Lua `UnitAura` pushes it as `count` at `0x614910`).
+
+## The GCD check (2026-11-18, for Boon of Swift Light)
+
+The refusal side is the cooldown query `0x00807980` (wrapped by `0x00809000`, `__cdecl(spellId,
+isActivePlayer, ...)`, on the record bank `0xD3F5AC + 24*isActivePlayer`). It fetches its own record
+copy through `0x004CFD20` into `[ebp-0x2C4]`, so the copy's StartRecoveryCategory `+0x234` is
+`[ebp-0x90]`, loaded at `0x8079E8` into `[ebp-0x1C]`. The GCD records are then matched at `0x807BBD`
+(`cmp [rec+0x28], ecx`): a bank record's `+0x28` is the category the GCD start stored, its `+0x2C`
+the duration, `+0x10` the start time. So start and check both take the category from a record copy
+made by `0x004CFD20`; within the spell code region (`0x7F0000-0x812000`) no other instruction reads
+`+0x234`. `rulerelax.cpp` rule `swiftlight` rewrites that field in the copy for one spell.

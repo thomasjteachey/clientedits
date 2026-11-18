@@ -115,6 +115,20 @@
 // calculator 0x007FF180 (move check, send, local cast prediction, tooltip,
 // GetSpellInfo) and CGPlayer's cast-time virtual 0x006D68D0 (cast-start
 // visual) report 0 for a holder.
+//
+// "swiftlight" (2026-11-18) aura 94418. A holder's Flash of Light (paladin
+// family 10, flag 0x40000000) has its own GCD: it neither starts the shared
+// category-133 GCD nor waits on it. The instant cast is a -100% CASTING_TIME
+// spellmod on the boon's record aura, which the client applies itself. The
+// GCD category is read from a Spell DB record COPY at both ends: the GCD start
+// 0x00805D70 (rec+0x234 at 0x805D7A / 0x805E85; its caller on the send path
+// passes the stack copy [ebp-0x2E0]) and the GCD half of the cooldown query
+// 0x00807980 (its copy's +0x234 = [ebp-0x90] at 0x8079E8, compared with the
+// GCD bank record's +0x28 at 0x807BBD). Every copy comes from the fetch
+// 0x004CFD20, so that fetch is detoured: a holder's Flash of Light copy leaves
+// with category 94418 (the server's VioletHoldClassBoons::
+// GetGlobalCooldownCategory answers the same). The category-133 haste branch
+// in 0x805D70 no longer matches it, and the server skips haste for it too.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -475,6 +489,19 @@ static bool g_fieldMedicLive = false;        // the acceptor 0x0080BC80 is hooke
 static int  g_secondComingAuras[kMaxAuras];
 static int  g_secondComingAuraCount = 0;
 
+// Rule: "swiftlight" (Violet Hold Boon of Swift Light). A holder's Flash of
+// Light keeps a GCD category of its own. 0 entries = rule off.
+static int  g_swiftLightAuras[kMaxAuras];
+static int  g_swiftLightAuraCount = 0;
+// The private category. Must match VioletHoldClassBoons::GetGlobalCooldownCategory
+// (it returns SPELL_SWIFT_LIGHT, 94418) or client and server time the GCD apart.
+static int  g_swiftLightCategory = 94418;
+static const int   kRec_StartRecoveryCategory = 0x234;   // DBC field 205
+static const int   kFamilyPaladin             = 10;
+static const DWORD kPaladinFlagFlashOfLight   = 0x40000000;
+static const size_t kSpellDbGetStolen = 6;   // 55 / 8B EC / 8B 51 10
+static SpellDbGet_t pOrigSpellDbGet;
+
 // ------------------------------------------------------------------- logging
 static void Log(const char* fmt, ...)
 {
@@ -791,6 +818,42 @@ static int __cdecl CastTimeWrapper(void* rec, int a2, int a3, int a4)
     return 0;
 }
 
+// The Spell DB fetch 0x004CFD20 (__thiscall(db, id, buf), copies the record
+// into buf). For a Swift Light holder, Flash of Light's copy leaves with the
+// private GCD category in place of 133, so the GCD start (0x805D70) and the GCD
+// half of the cooldown query (0x807980) - both of which read a copy's +0x234 -
+// agree that Flash of Light has its own GCD. The fast path is two field reads.
+static int __fastcall SpellDbGetWrapper(void* db, void* /*edx*/, int spellId, void* buf)
+{
+    int ok = pOrigSpellDbGet(db, spellId, buf);
+    if (!ok || !buf || !g_enabled || !g_swiftLightAuraCount)
+        return ok;
+
+    BYTE* rec = (BYTE*)buf;
+    if (*(int*)(rec + kRec_SpellFamilyName) != kFamilyPaladin
+        || !(*(DWORD*)(rec + kRec_SpellFamilyFlags1) & kPaladinFlagFlashOfLight)
+        || *(int*)(rec + kRec_StartRecoveryCategory) == 0)
+        return ok;
+
+    unsigned __int64 guid = pGetActiveGuid();
+    if (!guid)
+        return ok;
+    void* player = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnit, "rulerelax", __LINE__);
+    if (!player || !UnitHasAnyAura(player, g_swiftLightAuras, g_swiftLightAuraCount))
+        return ok;
+
+    if (g_debug) {
+        static int s_lastSpell = 0;
+        if (s_lastSpell != spellId) {
+            Log("swiftlight: spell=%d GCD category %d -> %d", spellId,
+                *(int*)(rec + kRec_StartRecoveryCategory), g_swiftLightCategory);
+            s_lastSpell = spellId;
+        }
+    }
+    *(int*)(rec + kRec_StartRecoveryCategory) = g_swiftLightCategory;
+    return ok;
+}
+
 // CGPlayer::GetSpellCastTime (virtual). Only the cast-start visual asks it.
 static int __fastcall PlayerCastTimeWrapper(void* unit, void* /*edx*/, void* rec)
 {
@@ -1090,6 +1153,12 @@ void RuleRelax_LoadSettings(const char* dir)
     // Second Coming charge aura (server: the Violet Hold priest boon).
     GetPrivateProfileStringA("RuleRelax", "SecondComingAura", "94386", buf, sizeof(buf), ini);
     ParseSpellList(buf, g_secondComingAuras, &g_secondComingAuraCount, kMaxAuras);
+
+    // Swift Light (server: SPELL_SWIFT_LIGHT 94418, which is also the private
+    // GCD category it gives Flash of Light).
+    GetPrivateProfileStringA("RuleRelax", "SwiftLightAura", "94418", buf, sizeof(buf), ini);
+    ParseSpellList(buf, g_swiftLightAuras, &g_swiftLightAuraCount, kMaxAuras);
+    g_swiftLightCategory = GetPrivateProfileIntA("RuleRelax", "SwiftLightCategory", 94418, ini);
 }
 
 // ------------------------------------------------------------------- install
@@ -1137,7 +1206,7 @@ void RuleRelax_Install()
     // Inert until an aura id is configured, so shipping it enabled changes
     // nothing for anyone until the boon / set exists.
     if (!g_enabled || (!g_weaponAuraCount && !g_pointBlankAuraCount && !g_untamedAuraCount &&
-                       !g_fieldMedicAuraCount && !g_secondComingAuraCount))
+                       !g_fieldMedicAuraCount && !g_secondComingAuraCount && !g_swiftLightAuraCount))
         return;
 
     // Every rule reads auras; without these nothing is safe to install.
@@ -1313,5 +1382,25 @@ void RuleRelax_Install()
                 Log("secondcoming: cast-time hook FAILED - rule off");
             g_secondComingAuraCount = 0;
         }
+    }
+
+    if (g_swiftLightAuraCount) {
+        // One detour on the Spell DB fetch. Field Medic calls the fetch
+        // directly (pSpellDbGet = the patched entry), which is fine: the
+        // wrapper only ever touches a paladin Flash of Light copy.
+        bool sigsOk =
+            VerifySig(kGetActiveGuid, kGetActiveSig, sizeof(kGetActiveSig), "GetActivePlayerGuid") &&
+            VerifySig(kObjectPtr,     kObjectPtrSig, sizeof(kObjectPtrSig), "ObjectPtr");
+        if (sigsOk) {
+            pGetActiveGuid = (GetActiveGuid_t)kGetActiveGuid;
+            pObjectPtr     = (ObjectPtr_t)kObjectPtr;
+            pOrigSpellDbGet = (SpellDbGet_t)InstallDetour(kSpellDbGet, kSpellDbGetSig,
+                sizeof(kSpellDbGetSig), kSpellDbGetStolen, (void*)&SpellDbGetWrapper, "spelldb-get");
+        }
+        if (pOrigSpellDbGet)
+            Log("swiftlight rule installed at 0x%08X (%d aura(s), first %d, category %d)",
+                kSpellDbGet, g_swiftLightAuraCount, g_swiftLightAuras[0], g_swiftLightCategory);
+        else
+            g_swiftLightAuraCount = 0;
     }
 }
