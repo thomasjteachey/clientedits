@@ -1,4 +1,4 @@
-// gcdtempo.cpp - Violet Hold "Boon of Tempo": 0.1 sec off every global
+// gcdtempo.cpp - Violet Hold "Boon of Tempo": 0.125 sec off every global
 // cooldown per stack, to no less than 0.5 sec.
 //
 // PROBLEM
@@ -111,7 +111,7 @@ static GetAuraRec_t   pGetAuraRec;
 static int  g_enabled    = 1;
 static int  g_debug      = 0;
 static int  g_auraId     = 94318;   // Boon of Tempo
-static int  g_msPerStack = 100;
+static int  g_msPerStack = 125;
 static int  g_maxMs      = 500;
 static int  g_floorMs    = 500;
 static char g_dir[MAX_PATH];
@@ -231,7 +231,7 @@ void GcdTempo_LoadSettings(const char* dir)
     g_enabled    = GetPrivateProfileIntA("GcdTempo", "Enabled",    1,     ini);
     g_debug      = GetPrivateProfileIntA("GcdTempo", "Debug",      0,     ini);
     g_auraId     = GetPrivateProfileIntA("GcdTempo", "Aura",       94318, ini);
-    g_msPerStack = GetPrivateProfileIntA("GcdTempo", "MsPerStack", 100,   ini);
+    g_msPerStack = GetPrivateProfileIntA("GcdTempo", "MsPerStack", 125,   ini);
     g_maxMs      = GetPrivateProfileIntA("GcdTempo", "MaxMs",      500,   ini);
     g_floorMs    = GetPrivateProfileIntA("GcdTempo", "FloorMs",    500,   ini);
     if (g_floorMs < 0) g_floorMs = 0;
