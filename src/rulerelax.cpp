@@ -480,6 +480,7 @@ static int  g_fieldMedicAuraCount = 0;
 // Set per rule only once its detour is actually in place.
 static bool g_pointBlankLive = false;
 static bool g_pointBlankMovingLive = false;
+static bool g_pointBlankMoveCancelLive = false;
 static bool g_untamedCastLive = false;
 static bool g_untamedUsableLive = false;
 static bool g_fieldMedicLive = false;        // the acceptor 0x0080BC80 is hooked
@@ -1201,6 +1202,79 @@ static void* InstallDetour(DWORD addr, const BYTE* sig, size_t sigLen, size_t st
     return tramp;
 }
 
+// ------------------------------------------- Point Blank: no cancel on move
+//
+// The client cancels its own in-flight casts whenever the active player starts
+// a new movement - a change of direction counts: 0x005FAA83 -> 0x00806620
+// (__cdecl, no args), which walks the pending-spell list 0x00AF5254, copies
+// each record to [ebp-0x2AC] and cancels (0x00806200, reason 0x28, which also
+// sends CMSG_CANCEL_CAST) every one whose InterruptFlags (+0x7C, copy
+// [ebp-0x230]) carry MOVEMENT. The start-while-moving waiver above only covers
+// the two checks at cast start, so a Point Blank Aimed Shot begun on the run
+// was still cancelled by the next direction change. The bit test at
+// 0x008066C5 is diverted: a holder's Aimed Shot / Multi-Shot reads as not
+// movement-interrupted; every other cast is cancelled exactly as before.
+static const DWORD  kMoveCancelTest      = 0x008066C5;
+static const BYTE   kMoveCancelTestSig[] = { 0xF6, 0x85, 0xD0, 0xFD, 0xFF, 0xFF, 0x01, 0x74, 0x0F, 0x6A, 0x28 };
+static const size_t kMoveCancelTestLen   = 9;     // test byte [ebp-0x230],1 (7) + je short (2)
+static DWORD g_moveCancelDo   = 0x008066CE;       // push 0x28 ... call 0x00806200
+static DWORD g_moveCancelSkip = 0x008066DD;       // on to the next spell in the list
+
+static int __cdecl PointBlankKeepsMovingCast(const void* rec)
+{
+    if (!g_enabled || !g_pointBlankMovingLive || !IsPointBlankMovingShot(rec))
+        return 0;
+    unsigned __int64 guid = pGetActiveGuid();
+    if (!guid)
+        return 0;
+    void* player = pObjectPtr((DWORD)guid, (DWORD)(guid >> 32), kTypeMaskUnit, "rulerelax", __LINE__);
+    int matchedAura = player ? UnitHasAnyAura(player, g_pointBlankAuras, g_pointBlankAuraCount) : 0;
+    if (matchedAura && g_debug)
+        Log("point blank moving cast: spell=%d kept through a movement start aura=%d",
+            *(const int*)((const BYTE*)rec + kRec_Id), matchedAura);
+    return matchedAura != 0;
+}
+
+// Stands in for "test byte ptr [ebp-0x230], 1 / je 0x008066DD". eax, ecx and
+// edx are dead on both exits (0x008066CE pushes constants and ebx; 0x008066DD
+// reloads ecx), and ebx/esi/edi survive the __cdecl call.
+static __declspec(naked) void MoveCancelTestCave()
+{
+    __asm {
+        test byte ptr [ebp - 0x230], 1
+        jz   skip
+        lea  eax, [ebp - 0x2AC]
+        push eax
+        call PointBlankKeepsMovingCast
+        add  esp, 4
+        test eax, eax
+        jnz  skip
+        jmp  dword ptr [g_moveCancelDo]
+    skip:
+        jmp  dword ptr [g_moveCancelSkip]
+    }
+}
+
+// A jmp rel32 over `len` bytes of verified code (no trampoline: the target
+// jumps back on its own).
+static bool PatchJump(DWORD addr, const BYTE* sig, size_t sigLen, size_t len, void* target, const char* name)
+{
+    if (len < 5 || len > sigLen || !VerifySig(addr, sig, sigLen, name))
+        return false;
+    BYTE* p = (BYTE*)addr;
+    DWORD old = 0;
+    if (!VirtualProtect(p, len, PAGE_EXECUTE_READWRITE, &old)) {
+        Log("%s: VirtualProtect failed at 0x%08X - disabled", name, addr);
+        return false;
+    }
+    memset(p, 0x90, len);
+    p[0] = 0xE9;
+    *(DWORD*)(p + 1) = (DWORD)target - (addr + 5);
+    VirtualProtect(p, len, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, len);
+    return true;
+}
+
 void RuleRelax_Install()
 {
     // Inert until an aura id is configured, so shipping it enabled changes
@@ -1246,9 +1320,13 @@ void RuleRelax_Install()
                 pOrigCastTime = (CastTime_t)InstallDetour(kCastTime, kCastTimeSig,
                     sizeof(kCastTimeSig), kCastTimeStolen, (void*)&CastTimeWrapper, "cast-time");
                 g_pointBlankMovingLive = pOrigCastTime != NULL;
+                if (g_pointBlankMovingLive)
+                    g_pointBlankMoveCancelLive = PatchJump(kMoveCancelTest, kMoveCancelTestSig,
+                        sizeof(kMoveCancelTestSig), kMoveCancelTestLen, (void*)&MoveCancelTestCave, "move-cancel");
             }
-            Log("pointblank rule installed at 0x%08X%s (%d aura(s), first %d)",
+            Log("pointblank rule installed at 0x%08X%s%s (%d aura(s), first %d)",
                 kRangeCalc, g_pointBlankMovingLive ? " + 0x007FF180" : " [moving cast FAILED]",
+                g_pointBlankMovingLive ? (g_pointBlankMoveCancelLive ? " + 0x008066C5" : " [move-cancel FAILED]") : "",
                 g_pointBlankAuraCount, g_pointBlankAuras[0]);
         }
     }

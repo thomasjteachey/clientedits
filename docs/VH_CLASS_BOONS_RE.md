@@ -96,6 +96,40 @@ display, not a gate.
 Prologue stolen: `55 / 8B EC / 8B 55 1C` (6 bytes). Signature checked:
 `55 8B EC 8B 55 1C 83 EC 08 85 D2`.
 
+## Point Blank — the client's cancel on movement start (2026-11-18)
+
+Owner report: a Point Blank Aimed Shot begun on the run was cancelled by
+switching direction. The server allows the whole cast (Spell::update waives
+the movement interrupt via VioletHoldClassBoons::ShootsWhileMoving); the cancel
+is the client's own:
+
+```
+0x005FAA40  movement handler for the active player (GUID == [0xCA1238/C])
+  0x005FAA83  call 0x00806620
+0x00806620  __cdecl void(): walk the pending-spell list [0x00AF5254]
+            (skips [0x00D3F4E4]), next = [spell+4], id = [spell+0x20];
+            copy the record (rows [0x00AD49F0], or 0x004CFBB0 when
+            [0x00C5DEA0] is set) to [ebp-0x2AC]
+  0x008066C5  test byte ptr [ebp-0x230], 1   ; InterruptFlags (+0x7C) MOVEMENT
+  0x008066CC  je 0x008066DD                  ; next spell
+  0x008066CE  push 0x28 / push 1 / push 0 / push ebx
+  0x008066D5  call 0x00806200                ; cancel (reason 0x28) + CMSG_CANCEL_CAST
+0x00806200  the cancel routine itself (11 callers; 0x00806620 is the only
+            movement one). It also sends 0x12F itself when the spell's cast
+            time (vtable +0x148) is > 0.
+```
+
+A cast started while already moving survives until the next movement START
+(direction change, strafe, jump...) because only a start event reaches
+0x00806620.
+
+**Hook:** `jmp` over the 9 bytes at `0x008066C5` (signature
+`F6 85 D0 FD FF FF 01 74 0F 6A 28`) to a naked stub that redoes the bit test and
+asks `PointBlankKeepsMovingCast(&copy)`; a holder's Aimed Shot / Multi-Shot
+goes to `0x008066DD` (kept), everything else to `0x008066CE` (cancelled as
+before). eax/ecx/edx are dead on both exits. Log line: `pointblank rule
+installed at 0x007FF480 + 0x007FF180 + 0x008066C5`.
+
 ## Untamed — shapeshift through stun / fear / confuse (aura 94361)
 
 ### The cast path: `0x00739650`
@@ -400,9 +434,10 @@ be trusted to be 0 ms.
 
 The cast bar itself is drawn from `SMSG_SPELL_START` (server cast time). With
 the server half instant there is no bar; without it the client sends at once
-and the server still runs a 10 s cast. The movement interrupt during a cast is
-the server's; client-side, moving only matters through the two error-51 checks
-above, which now see 0 ms.
+and the server still runs a 10 s cast. **Correction (2026-11-18):** moving does
+not only matter through the two error-51 checks above. The client also cancels
+its own in-flight casts on every new movement start - see "Point Blank — the
+client's cancel on movement start" below.
 
 ### Install
 
